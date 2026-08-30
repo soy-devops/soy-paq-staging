@@ -1,0 +1,278 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-08-23 17:09:24.770256",
+ "default_view": "List",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "package_info_section",
+  "external_tracking_number",
+  "inbound_asn",
+  "column_break_rxek",
+  "customer",
+  "target_warehouse",
+  "column_break_tzfi",
+  "carrier",
+  "weight",
+  "dimensions",
+  "receiving__scanner_tab",
+  "system_fields_section",
+  "scan_item_barcode",
+  "scan_bin",
+  "column_break_phnu",
+  "last_scanned_row",
+  "last_scan_action",
+  "scan_state",
+  "section_break_hvvf",
+  "package_items",
+  "section_break_xtft",
+  "column_break_ffxa",
+  "undo_last_scan",
+  "mark_stored",
+  "inventory_confirmation_tab",
+  "inventory_confirmation_section",
+  "column_break_pvaa",
+  "status",
+  "naming_series",
+  "stock_entry_reference",
+  "received_by",
+  "received_at",
+  "section_break_rdiq",
+  "receive_next_package"
+ ],
+ "fields": [
+  {
+   "fieldname": "package_info_section",
+   "fieldtype": "Section Break",
+   "label": "Package Info"
+  },
+  {
+   "fieldname": "external_tracking_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "External Tracking Number",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "inbound_asn",
+   "fieldtype": "Link",
+   "label": "Inbound ASN",
+   "options": "Inbound ASN"
+  },
+  {
+   "fieldname": "column_break_rxek",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Target Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "column_break_tzfi",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Select",
+   "label": "Carrier",
+   "options": "Amazon\nUPS\nFedEx\nDHL\nUSPS\nXPO\nR+L\nOther"
+  },
+  {
+   "description": "Enter decimal pounds only. Eg: 3.5",
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight (lbs)"
+  },
+  {
+   "description": "Length x Width x Height Eg: 3x5x6",
+   "fieldname": "dimensions",
+   "fieldtype": "Data",
+   "label": "Dimensions (in)"
+  },
+  {
+   "fieldname": "receiving__scanner_tab",
+   "fieldtype": "Tab Break",
+   "label": "Receiving Scanner"
+  },
+  {
+   "fieldname": "system_fields_section",
+   "fieldtype": "Section Break",
+   "label": "Receiving"
+  },
+  {
+   "fieldname": "scan_item_barcode",
+   "fieldtype": "Data",
+   "label": "Scan Item Barcode",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "scan_bin",
+   "fieldtype": "Data",
+   "label": "Scan Bin"
+  },
+  {
+   "fieldname": "column_break_phnu",
+   "fieldtype": "Column Break",
+   "hidden": 1
+  },
+  {
+   "fieldname": "last_scanned_row",
+   "fieldtype": "Data",
+   "hidden": 1
+  },
+  {
+   "fieldname": "last_scan_action",
+   "fieldtype": "Data",
+   "hidden": 1
+  },
+  {
+   "default": "Waiting for Item",
+   "fieldname": "scan_state",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "options": "Waiting for Item\nWaiting for Bin"
+  },
+  {
+   "fieldname": "section_break_hvvf",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "package_items",
+   "fieldtype": "Table",
+   "label": "Package Items",
+   "options": "Inbound Package Item"
+  },
+  {
+   "fieldname": "section_break_xtft",
+   "fieldtype": "Section Break",
+   "label": "Action"
+  },
+  {
+   "fieldname": "column_break_ffxa",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "undo_last_scan",
+   "fieldtype": "Button",
+   "label": "Undo Last Scan"
+  },
+  {
+   "fieldname": "mark_stored",
+   "fieldtype": "Button",
+   "label": "Mark Stored"
+  },
+  {
+   "fieldname": "inventory_confirmation_tab",
+   "fieldtype": "Tab Break",
+   "label": "Inventory Confirmation"
+  },
+  {
+   "fieldname": "inventory_confirmation_section",
+   "fieldtype": "Section Break",
+   "label": "Inventory Confirmation"
+  },
+  {
+   "fieldname": "column_break_pvaa",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Received",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Received\nInspecting\nStored\nConsolidated\nShipped\nDelivered\nException",
+   "reqd": 1
+  },
+  {
+   "default": "SPQ-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Naming Series",
+   "options": "SPQ-.#####",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_entry_reference",
+   "fieldtype": "Link",
+   "label": "Stock Entry Reference",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "received_by",
+   "fieldtype": "Link",
+   "label": "Received By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "default": "Now",
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_rdiq",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "receive_next_package",
+   "fieldtype": "Button",
+   "label": "Receive Next Package"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-28 13:45:14.731241",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Inbound Package",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Warehouse Operator",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

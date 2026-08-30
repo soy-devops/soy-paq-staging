@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+jobs:
+  lint:
+    name: Lint & compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff lint
+        run: ruff check soypaq scripts
+      - name: Ruff format check
+        run: ruff format --check soypaq scripts
+      - name: Byte-compile all Python
+        run: python -m compileall -q soypaq scripts
+
+  doctypes:
+    name: DocType contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Guards the exact class of bug that made this app un-installable:
+      # custom=1 doctypes, missing controllers, mismatched class names.
+      - name: Validate doctype JSON + controllers
+        run: python scripts/check_doctypes.py
+
+  frontend:
+    name: Frontend build is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install deps
+        working-directory: ui
+        run: npm ci
+      - name: Build
+        working-directory: ui
+        run: npm run build
+      # The compiled bundle is committed because Frappe Cloud does not run a Node
+      # build. If someone edits ui/src without rebuilding, production would silently
+      # serve stale UI - this catches that.
+      - name: Fail if committed build output is stale
+        run: |
+          if ! git diff --quiet -- soypaq/public/wms; then
+            echo "::error::Committed build output is out of date."
+            echo "Run 'cd ui && npm run build' and commit soypaq/public/wms/."
+            git diff --stat -- soypaq/public/wms
+            exit 1
+          fi
+          echo "build output matches ui/src"
+
+  install:
+    name: Fresh install on a clean site
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+      redis:
+        image: redis:alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: soypaq
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmysqlclient-dev mariadb-client
+          npm install -g yarn
+
+      - name: Configure MariaDB for Frappe
+        run: |
+          mysql -h 127.0.0.1 -u root -proot -e \
+            "SET GLOBAL character_set_server='utf8mb4';
+             SET GLOBAL collation_server='utf8mb4_unicode_ci';"
+
+      - name: Init bench
+        run: |
+          pip install frappe-bench
+          bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
+        working-directory: /home/runner
+
+      - name: Point bench at CI services
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench set-config -g db_host 127.0.0.1
+          bench set-config -g redis_cache "redis://127.0.0.1:6379"
+          bench set-config -g redis_queue "redis://127.0.0.1:6379"
+          bench set-config -g redis_socketio "redis://127.0.0.1:6379"
+
+      - name: Get erpnext + soypaq
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench get-app --branch version-15 erpnext
+          bench get-app soypaq "$GITHUB_WORKSPACE/soypaq"
+
+      # This is the check that matters most. `bench migrate` on an existing site
+      # passes even when the app is broken for new installs, because patches are
+      # marked already-run on a fresh install and never execute.
+      - name: Create site and install app
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench new-site ci.localhost \
+            --mariadb-root-password root \
+            --admin-password admin \
+            --mariadb-user-host-login-scope='%' \
+            --install-app erpnext
+          bench --site ci.localhost install-app soypaq
+
+      - name: Assert schema actually landed
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench --site ci.localhost execute soypaq.tests.ci_smoke.run

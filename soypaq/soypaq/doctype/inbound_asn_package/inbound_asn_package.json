@@ -1,0 +1,89 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 1,
+ "creation": "2026-08-23 17:09:24.688725",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "inbound_asn_package",
+  "inbound_asn",
+  "external_tracking_number",
+  "status",
+  "carrier",
+  "weight",
+  "dimensions"
+ ],
+ "fields": [
+  {
+   "fieldname": "inbound_asn_package",
+   "fieldtype": "Section Break",
+   "label": "Inbound ASN Package"
+  },
+  {
+   "fieldname": "inbound_asn",
+   "fieldtype": "Link",
+   "label": "Inbound ASN",
+   "options": "Inbound ASN"
+  },
+  {
+   "fieldname": "external_tracking_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "External Tracking Number"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Expected\nReceived\nException",
+   "reqd": 1
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Select",
+   "label": "Carrier",
+   "options": "UPS\nFedEx\nUSPS\nDHL\nAmazon\nOnTrac\nOther"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight (lbs)"
+  },
+  {
+   "fieldname": "dimensions",
+   "fieldtype": "Data",
+   "label": "Dimensions"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-23 17:09:24.688725",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Inbound ASN Package",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

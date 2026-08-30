@@ -1,0 +1,74 @@
+[project]
+name = "soypaq"
+authors = [
+    { name = "SoyPaq", email = "admin@example.com"}
+]
+description = "Warehouse management system for local ERPNext demos."
+requires-python = ">=3.10,<3.12"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = [
+    # Frappe/ERPNext are installed and managed by bench, not pip.
+    "shippo>=3.0.0,<4.0.0",
+]
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+# These dependencies are only installed when developer mode is enabled
+[tool.bench.dev-dependencies]
+# package_name = "~=1.1.0"
+
+# These apt dependencies will be installed from Ubuntu repositories when you host your app on Frappe Cloud
+[deploy.dependencies.apt]
+packages = []
+
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0,<16.0.0"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "F",
+    "E",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "RUF",
+]
+ignore = [
+    "B017", # assertRaises(Exception) - should be more specific
+    "B018", # useless expression, not assigned to anything
+    "B023", # function doesn't bind loop variable - will have last iteration's value
+    "B904", # raise inside except without from
+    "E101", # indentation contains mixed spaces and tabs
+    "E402", # module level import not at top of file
+    "E501", # line too long
+    "E741", # ambiguous variable name
+    "F401", # "unused" imports
+    "F403", # can't detect undefined names from * import
+    "F405", # can't detect undefined names from * import
+    "F722", # syntax error in forward type annotation
+    "W191", # indentation contains tabs
+    "UP030", # Use implicit references for positional format fields (translations)
+    "UP031", # Use format specifiers instead of percent format
+    "UP032", # Use f-string instead of `format` call (translations)
+    "UP037", # quoted annotations
+    "UP040", # Use type aliases instead of type annotations
+    # Whitelisted API methods take their arguments from HTTP, where "absent" is the
+    # normal case, and `param: str = None` is the idiom used throughout Frappe itself.
+    # Frappe reads these annotations at runtime (frappe.utils.typing_validations), so
+    # rewriting them to `str | None` is a behaviour-affecting change, not a style fix.
+    "RUF013", # implicit Optional
+]
+typing-modules = ["frappe.types.DF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"
+docstring-code-format = true

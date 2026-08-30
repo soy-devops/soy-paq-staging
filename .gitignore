@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Frappe
+*.log
+.frappe
+node_modules/
+__pycache__
+
+# Node / Vite
+ui/node_modules/
+ui/dist/
+ui/.vite/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local scratch
+*.bak
+*.orig
+*.rej
+
+# NOTE: soypaq/public/wms/ is Vite build output but is deliberately COMMITTED.
+# Frappe Cloud does not run `npm run build`, so compiled assets must ship in the repo.
+# CI (.github/workflows/ci.yml) verifies they stay in sync with ui/src.

@@ -1,0 +1,168 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-08-23 17:09:24.569727",
+ "default_view": "List",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "client_info_tab",
+  "section_break_nmgn",
+  "external_tracking_number",
+  "customer",
+  "company",
+  "supplier",
+  "purchase_order",
+  "status",
+  "expected_arrival",
+  "column_break_xuir",
+  "target_warehouse",
+  "carrier",
+  "weight",
+  "dimensions",
+  "section_break_kjuf",
+  "asn_item",
+  "naming_series"
+ ],
+ "fields": [
+  {
+   "fieldname": "client_info_tab",
+   "fieldtype": "Tab Break",
+   "label": "Client Info"
+  },
+  {
+   "fieldname": "section_break_nmgn",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "external_tracking_number",
+   "fieldtype": "Data",
+   "label": "External Tracking Number"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Client / Customer",
+   "options": "Customer",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company / Organization",
+   "options": "Company"
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "purchase_order",
+   "fieldtype": "Link",
+   "label": "Purchase Order",
+   "options": "Purchase Order"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Expected\nPartially Received\nReceived\nCancelled"
+  },
+  {
+   "fieldname": "expected_arrival",
+   "fieldtype": "Date",
+   "label": "Expected Arrival"
+  },
+  {
+   "fieldname": "column_break_xuir",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "Target Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Select",
+   "label": "Carrier",
+   "options": "Amazon\nUPS\nFedEx\nDHL\nUSPS\nXPO\nR+L\nOther"
+  },
+  {
+   "description": "Enter decimal pounds only. Eg: 3.5",
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight (lbs)"
+  },
+  {
+   "description": "Length x Width x Height Eg: 3x5x6",
+   "fieldname": "dimensions",
+   "fieldtype": "Data",
+   "label": "Dimensions (in)"
+  },
+  {
+   "fieldname": "section_break_kjuf",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "asn_item",
+   "fieldtype": "Table",
+   "label": "ASN Items",
+   "options": "Inbound ASN Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "no_copy": 1,
+   "options": "ASN-.#####",
+   "print_hide": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-29 10:37:50.349520",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Inbound ASN",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Warehouse Operator",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,270 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-08-23 17:09:25.050885",
+ "default_view": "List",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "details_tab",
+  "order_information_section",
+  "status",
+  "sales_order",
+  "customer",
+  "column_break_ands",
+  "warehouse",
+  "assigned_to",
+  "assigned_user",
+  "tracking_number",
+  "box_confirmed",
+  "picking_tab",
+  "picking_scanner_section",
+  "scan_item_barcode",
+  "column_break_mmbf",
+  "pack_state",
+  "last_scanned_row",
+  "last_scan_action",
+  "section_break_hygq",
+  "pick_items",
+  "section_break_suak",
+  "undo_last_scan",
+  "column_break_spqw",
+  "complete_pack",
+  "tab_3_tab",
+  "pick_confirmation_section",
+  "current_status",
+  "column_break_whgw",
+  "completed_by",
+  "completed_at",
+  "column_break_ashz",
+  "total_items",
+  "total_required_qty",
+  "total_packed_qty",
+  "naming_series"
+ ],
+ "fields": [
+  {
+   "fieldname": "details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "order_information_section",
+   "fieldtype": "Section Break",
+   "label": "Order Information"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nPicking\nCompleted\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "column_break_ands",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Pick Task",
+   "options": "Pick Task"
+  },
+  {
+   "fieldname": "assigned_to",
+   "fieldtype": "Select",
+   "label": "Package Type",
+   "options": "Carton Box\nPoly Mailer\nPallet\nOther"
+  },
+  {
+   "fieldname": "assigned_user",
+   "fieldtype": "Link",
+   "label": "Assigned To",
+   "options": "User"
+  },
+  {
+   "fieldname": "tracking_number",
+   "fieldtype": "Data",
+   "label": "Tracking Number",
+   "options": "Low\nNormal\nHigh\nUrgent"
+  },
+  {
+   "fieldname": "box_confirmed",
+   "fieldtype": "Check",
+   "label": "Box Confirmed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "picking_tab",
+   "fieldtype": "Tab Break",
+   "label": "Packing"
+  },
+  {
+   "fieldname": "picking_scanner_section",
+   "fieldtype": "Section Break",
+   "label": "Packing Scanner"
+  },
+  {
+   "fieldname": "scan_item_barcode",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Scan Item Barcode",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_mmbf",
+   "fieldtype": "Column Break",
+   "hidden": 1
+  },
+  {
+   "default": "Waiting for Item",
+   "fieldname": "pack_state",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Pick State",
+   "options": "Waiting for Item"
+  },
+  {
+   "fieldname": "last_scanned_row",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Last Scanned Row"
+  },
+  {
+   "fieldname": "last_scan_action",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Last Scan Action"
+  },
+  {
+   "fieldname": "section_break_hygq",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "pick_items",
+   "fieldtype": "Table",
+   "label": "Pick Items",
+   "options": "Pack Task Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_suak",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "undo_last_scan",
+   "fieldtype": "Button",
+   "label": "Undo Last Scan"
+  },
+  {
+   "fieldname": "column_break_spqw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "complete_pack",
+   "fieldtype": "Button",
+   "label": "Complete Pack"
+  },
+  {
+   "fieldname": "tab_3_tab",
+   "fieldtype": "Tab Break",
+   "label": "Confirmation"
+  },
+  {
+   "fieldname": "pick_confirmation_section",
+   "fieldtype": "Section Break",
+   "label": "Pick Confirmation"
+  },
+  {
+   "fieldname": "current_status",
+   "fieldtype": "Data",
+   "label": "Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_whgw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "completed_by",
+   "fieldtype": "Link",
+   "label": "Completed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At"
+  },
+  {
+   "fieldname": "column_break_ashz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_items",
+   "fieldtype": "Int",
+   "label": "Total items"
+  },
+  {
+   "fieldname": "total_required_qty",
+   "fieldtype": "Float",
+   "label": "Total Required Qty"
+  },
+  {
+   "fieldname": "total_packed_qty",
+   "fieldtype": "Float",
+   "label": "Total Packed Qty"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "no_copy": 1,
+   "options": "PACK-.#####",
+   "print_hide": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-29 10:37:50.049530",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Pack Task",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

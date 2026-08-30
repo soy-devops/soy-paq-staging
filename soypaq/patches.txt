@@ -1,0 +1,10 @@
+[pre_model_sync]
+# Patches added in this section will be executed before doctypes are migrated
+# Read docs to understand patches: https://frappeframework.com/docs/v14/user/en/database-migrations
+soypaq.patches.remove_legacy_custom_fields
+
+[post_model_sync]
+# Patches added in this section will be executed after doctypes are migrated
+soypaq.patches.add_soypaq_wms_desktop_icon
+soypaq.patches.add_wms_tracking_fields
+soypaq.patches.add_shippo_label_fields

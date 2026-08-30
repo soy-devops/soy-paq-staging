@@ -1,0 +1,245 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-08-23 17:09:25.186845",
+ "default_view": "List",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "details_tab",
+  "order_information_section",
+  "column_break_ashz",
+  "status",
+  "sales_order",
+  "customer",
+  "assigned_user",
+  "column_break_vqwk",
+  "warehouse",
+  "carrier",
+  "tracking_number",
+  "shipping_label_url",
+  "shippo_transaction_id",
+  "column_break_whgw",
+  "naming_series",
+  "shipped_by",
+  "shipped_at",
+  "section_break_hygq",
+  "column_break_gfbn",
+  "shipment_items",
+  "column_break_cdkq",
+  "total_items",
+  "total_required_qty",
+  "total_packed_qty",
+  "total_shipped_qty",
+  "shipping_actions_section",
+  "generate_label",
+  "column_break_mmbf",
+  "print_label",
+  "column_break_wuws",
+  "mark_shipped"
+ ],
+ "fields": [
+  {
+   "fieldname": "details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "order_information_section",
+   "fieldtype": "Section Break",
+   "label": "Shipping Information"
+  },
+  {
+   "fieldname": "column_break_ashz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Ready to Ship",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Ready to Ship\nShipped\nException\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "assigned_user",
+   "fieldtype": "Link",
+   "label": "Assigned To",
+   "options": "User"
+  },
+  {
+   "fieldname": "column_break_vqwk",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Pack Task",
+   "options": "Pack Task"
+  },
+  {
+   "fieldname": "carrier",
+   "fieldtype": "Select",
+   "label": "Carrier",
+   "options": "UPS\nFedEx\nDHL\nUSPS\nOther"
+  },
+  {
+   "fieldname": "tracking_number",
+   "fieldtype": "Data",
+   "label": "Tracking Number",
+   "options": "Low\nNormal\nHigh\nUrgent"
+  },
+  {
+   "fieldname": "shipping_label_url",
+   "fieldtype": "Small Text",
+   "label": "Shipping Label URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shippo_transaction_id",
+   "fieldtype": "Data",
+   "label": "Shippo Transaction ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_whgw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "SHIP-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Naming Series",
+   "options": "SHIP-.#####",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipped_by",
+   "fieldtype": "Link",
+   "label": "Shipped By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipped_at",
+   "fieldtype": "Datetime",
+   "label": "Shipped At"
+  },
+  {
+   "fieldname": "section_break_hygq",
+   "fieldtype": "Section Break",
+   "label": "Shipping Summary"
+  },
+  {
+   "fieldname": "column_break_gfbn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shipment_items",
+   "fieldtype": "Table",
+   "label": "Shipment Task Items",
+   "options": "Shipment Task Item"
+  },
+  {
+   "fieldname": "column_break_cdkq",
+   "fieldtype": "Column Break",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_items",
+   "fieldtype": "Int",
+   "label": "Total items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_required_qty",
+   "fieldtype": "Float",
+   "label": "Total Required Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_packed_qty",
+   "fieldtype": "Float",
+   "label": "Total Packed Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_shipped_qty",
+   "fieldtype": "Float",
+   "label": "Total Shipped Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shipping_actions_section",
+   "fieldtype": "Section Break",
+   "label": "Shipping Actions"
+  },
+  {
+   "fieldname": "generate_label",
+   "fieldtype": "Button",
+   "label": "Generate Label"
+  },
+  {
+   "fieldname": "column_break_mmbf",
+   "fieldtype": "Column Break",
+   "hidden": 1
+  },
+  {
+   "fieldname": "print_label",
+   "fieldtype": "Button",
+   "label": "Print Label"
+  },
+  {
+   "fieldname": "column_break_wuws",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "mark_shipped",
+   "fieldtype": "Button",
+   "label": "Mark Shipped"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-23 17:09:25.186845",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Shipment Task",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

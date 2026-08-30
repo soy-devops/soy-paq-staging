@@ -1,0 +1,12 @@
+# Normalise to LF in the repo. This app is developed on Windows but deployed to
+# Linux (Frappe Cloud); committing CRLF causes noisy diffs and can break scripts.
+* text=auto eol=lf
+
+# Binary - never touch
+*.woff2 binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
