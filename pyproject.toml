@@ -4,7 +4,7 @@ authors = [
     { name = "SoyPaq", email = "admin@example.com"}
 ]
 description = "Warehouse management system for local ERPNext demos."
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = [
