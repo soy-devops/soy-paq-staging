@@ -59,7 +59,7 @@ The planned public staging repository is:
 https://github.com/soy-devops/soy-paq-staging
 ```
 
-Use a Frappe/ERPNext v15 bench. The app declares compatibility in
+Use a Frappe/ERPNext v16 bench. The app declares compatibility in
 `pyproject.toml` and requires ERPNext through `hooks.py`.
 
 ## Current Version

@@ -108,7 +108,7 @@ jobs:
       - name: Init bench
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
+          bench init --skip-redis-config-generation --frappe-branch version-16 frappe-bench
         working-directory: /home/runner
 
       - name: Point bench at CI services
@@ -122,7 +122,7 @@ jobs:
       - name: Get erpnext + soypaq
         working-directory: /home/runner/frappe-bench
         run: |
-          bench get-app --branch version-15 erpnext
+          bench get-app --branch version-16 erpnext
           bench get-app soypaq "$GITHUB_WORKSPACE/soypaq"
 
       # This is the check that matters most. `bench migrate` on an existing site

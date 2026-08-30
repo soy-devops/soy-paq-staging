@@ -24,7 +24,7 @@ site credentials.
 ## Deployment Notes
 
 Frappe Cloud installs custom apps from a Git repository. This app is prepared for
-a Frappe/ERPNext v15 bench and declares compatibility in `pyproject.toml`.
+a Frappe/ERPNext v16 bench and declares compatibility in `pyproject.toml`.
 
 Use a separate branch per environment:
 
@@ -47,7 +47,7 @@ git push -u origin main staging
 ```
 
 Then add the app in Frappe Cloud from that GitHub repository and install
-`soypaq` on a v15 ERPNext site.
+`soypaq` on a v16 ERPNext site.
 
 ## Secrets
 
@@ -88,7 +88,7 @@ ruff format --check soypaq scripts
 cd ui && npm ci && npm run build && npm audit --omit=dev
 ```
 
-For a final install check, clone this app into a clean Frappe/ERPNext v15 bench,
+For a final install check, clone this app into a clean Frappe/ERPNext v16 bench,
 install it on a fresh site, and run:
 
 ```bash

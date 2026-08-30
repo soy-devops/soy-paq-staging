@@ -1,11 +1,11 @@
 # Frappe Cloud Deployment
 
-This app is prepared for a Frappe Cloud bench running Frappe/ERPNext v15. The
+This app is prepared for a Frappe Cloud bench running Frappe/ERPNext v16. The
 frontend build tooling expects Node 20.19 or newer.
 
 ## Add the App
 
-1. Create or choose a Frappe Cloud bench on Frappe/ERPNext v15.
+1. Create or choose a Frappe Cloud bench on Frappe/ERPNext v16.
 2. Ensure ERPNext is installed on the bench.
 3. Add this custom app from the public staging repository:
 
@@ -20,7 +20,7 @@ The app declares Frappe compatibility in `pyproject.toml`:
 
 ```toml
 [tool.bench.frappe-dependencies]
-frappe = ">=15.0.0,<16.0.0"
+frappe = ">=16.0.0,<17.0.0"
 ```
 
 ## Secrets
@@ -63,7 +63,7 @@ git diff --exit-code -- soypaq/public/wms
 ```
 
 For a final go/no-go, install from the public repository into a clean local
-Frappe/ERPNext v15 bench and run:
+Frappe/ERPNext v16 bench and run:
 
 ```bash
 bench --site <site-name> install-app soypaq
