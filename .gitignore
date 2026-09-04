@@ -42,3 +42,9 @@ Thumbs.db
 # NOTE: soypaq/public/wms/ is Vite build output but is deliberately COMMITTED.
 # Frappe Cloud does not run `npm run build`, so compiled assets must ship in the repo.
 # CI (.github/workflows/ci.yml) verifies they stay in sync with ui/src.
+
+# Local-only business/commercial context. MUST NOT reach the public mirror.
+# Client names, roadmap and commercial detail live here; PROJECT.md/CHANGELOG.md
+# are public and sanitized, so this file is excluded on purpose.
+BUSINESS_CONTEXT.md
+AGENT.md
