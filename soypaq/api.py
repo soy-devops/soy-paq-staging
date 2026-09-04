@@ -574,9 +574,9 @@ def _resolve_bin(code: str) -> str:
 		padded = re.sub(r"^([A-Za-z]+)(\d+)$", lambda m: f"{m.group(1)}{m.group(2).zfill(2)}", code)
 		unpadded = re.sub(r"^([A-Za-z]+)0*(\d+)$", r"\1\2", code)
 		for variant in {padded, unpadded} - {code}:
-			name = frappe.db.get_value("Warehouse", {"warehouse_name": variant}, "name") or frappe.db.get_value(
-				"Warehouse", {"name": ["like", f"%- {variant} -%"]}, "name"
-			)
+			name = frappe.db.get_value(
+				"Warehouse", {"warehouse_name": variant}, "name"
+			) or frappe.db.get_value("Warehouse", {"name": ["like", f"%- {variant} -%"]}, "name")
 			if name:
 				break
 	if not name:
@@ -970,12 +970,14 @@ def _inventory_snapshot() -> dict:
 		if key not in bin_activity_map:
 			bin_activity_map[key] = []
 		if len(bin_activity_map[key]) < 3:
-			bin_activity_map[key].append({
-				"reason": action.reason_code,
-				"user": _user(action.created_by_user)["name"],
-				"timestamp": str(action.creation),
-				"item": action.item_code,
-			})
+			bin_activity_map[key].append(
+				{
+					"reason": action.reason_code,
+					"user": _user(action.created_by_user)["name"],
+					"timestamp": str(action.creation),
+					"item": action.item_code,
+				}
+			)
 
 	bin_rows = []
 	for warehouse in warehouses:
@@ -1546,7 +1548,9 @@ def get_mobile_bootstrap(
 				"task_customer": pick_task.get("customer") if pick_task else "",
 				"warehouse": pick_task.get("warehouse") if pick_task else "",
 				"assigned_to": _user(pick_task.get("assigned_to") if pick_task else None),
-				"claimed_at": str(pick_task.get("claimed_at")) if pick_task and pick_task.get("claimed_at") else "",
+				"claimed_at": str(pick_task.get("claimed_at"))
+				if pick_task and pick_task.get("claimed_at")
+				else "",
 				"created": str(pick_task.creation) if pick_task else "",
 				"source_integrity": _source_integrity(pick_task, pick_order),
 				"pack_task_name": (
@@ -1679,9 +1683,7 @@ def create_inbound_asn(
 
 
 @frappe.whitelist()
-def start_receiving_session(
-	customer: str, target_warehouse: str = None, tracking_number: str = None
-) -> dict:
+def start_receiving_session(customer: str, target_warehouse: str = None, tracking_number: str = None) -> dict:
 	"""Open a blank receiving session for a box that arrived with no advance notice.
 
 	No ASN is created and no tracking number is invented. `customer` is required and
@@ -1701,7 +1703,10 @@ def start_receiving_session(
 	if tracking_number:
 		existing = frappe.db.get_value(
 			"Inbound Package",
-			{"external_tracking_number": tracking_number, "status": ["not in", DONE_STATUSES["Inbound Package"]]},
+			{
+				"external_tracking_number": tracking_number,
+				"status": ["not in", DONE_STATUSES["Inbound Package"]],
+			},
 			"name",
 		)
 		if existing:
@@ -1990,8 +1995,8 @@ def stage_item(package_name: str, item_code: str, bin_code: str) -> dict:
 
 	row.assigned_bin = bin_warehouse
 	doc.status = "Inspecting"
-	doc.last_scan_action = (
-		f"Staged {row.item_code} to {bin_warehouse}" + (" (damaged - rerouted)" if routed else "")
+	doc.last_scan_action = f"Staged {row.item_code} to {bin_warehouse}" + (
+		" (damaged - rerouted)" if routed else ""
 	)
 	doc.save()
 	_publish_task_update(doc)
@@ -2591,7 +2596,9 @@ def get_inventory() -> dict:
 
 
 @frappe.whitelist()
-def adjust_bin_qty(item_code: str, warehouse: str, quantity_delta: float, reason_code: str, notes: str = "") -> dict:
+def adjust_bin_qty(
+	item_code: str, warehouse: str, quantity_delta: float, reason_code: str, notes: str = ""
+) -> dict:
 	"""Correct a bin's quantity via Stock Reconciliation.
 
 	`quantity_delta` is the adjustment: positive to add stock, negative to remove.
@@ -2610,7 +2617,9 @@ def adjust_bin_qty(item_code: str, warehouse: str, quantity_delta: float, reason
 	if not frappe.db.exists("Warehouse", warehouse):
 		frappe.throw(f"Warehouse {warehouse} was not found in ERPNext.")
 	if frappe.db.get_value("Warehouse", warehouse, ["is_group", "disabled"], as_dict=True) in [
-		{"is_group": 1, "disabled": 0}, {"is_group": 0, "disabled": 1}, {"is_group": 1, "disabled": 1}
+		{"is_group": 1, "disabled": 0},
+		{"is_group": 0, "disabled": 1},
+		{"is_group": 1, "disabled": 1},
 	]:
 		frappe.throw(f"Warehouse {warehouse} is a zone or is disabled - choose a leaf bin.")
 
@@ -2623,11 +2632,9 @@ def adjust_bin_qty(item_code: str, warehouse: str, quantity_delta: float, reason
 		frappe.throw(f"Could not determine company for warehouse {warehouse}.")
 
 	# Get current bin state
-	current_qty = flt(frappe.db.get_value(
-		"Bin",
-		{"item_code": item_code, "warehouse": warehouse},
-		"actual_qty"
-	) or 0)
+	current_qty = flt(
+		frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0
+	)
 	new_qty = max(current_qty + quantity_delta, 0)
 
 	# Carry the bin's existing valuation forward; fall back to the item's own rate.
@@ -2647,13 +2654,16 @@ def adjust_bin_qty(item_code: str, warehouse: str, quantity_delta: float, reason
 	recon.set_posting_time = 1
 	recon.posting_date = frappe.utils.today()
 	recon.posting_time = frappe.utils.nowtime()
-	recon.append("items", {
-		"item_code": item_code,
-		"warehouse": warehouse,
-		"qty": new_qty,
-		"valuation_rate": valuation_rate,
-		"allow_zero_valuation_rate": 1 if not valuation_rate else 0,
-	})
+	recon.append(
+		"items",
+		{
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"qty": new_qty,
+			"valuation_rate": valuation_rate,
+			"allow_zero_valuation_rate": 1 if not valuation_rate else 0,
+		},
+	)
 	recon.insert()
 	recon.submit()
 
@@ -2682,7 +2692,9 @@ def adjust_bin_qty(item_code: str, warehouse: str, quantity_delta: float, reason
 
 
 @frappe.whitelist()
-def move_bin_stock(item_code: str, from_warehouse: str, to_warehouse: str, quantity: float, reason_code: str, notes: str = "") -> dict:
+def move_bin_stock(
+	item_code: str, from_warehouse: str, to_warehouse: str, quantity: float, reason_code: str, notes: str = ""
+) -> dict:
 	"""Move stock between bins via Stock Entry (Material Transfer).
 
 	Posts a real Stock Entry and creates an Inventory Action record linking to it.
@@ -2717,11 +2729,9 @@ def move_bin_stock(item_code: str, from_warehouse: str, to_warehouse: str, quant
 		frappe.throw("Quantity must be greater than zero.")
 
 	# Verify source has sufficient stock
-	available_qty = flt(frappe.db.get_value(
-		"Bin",
-		{"item_code": item_code, "warehouse": from_warehouse},
-		"actual_qty"
-	) or 0)
+	available_qty = flt(
+		frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": from_warehouse}, "actual_qty") or 0
+	)
 	if available_qty < quantity:
 		frappe.throw(
 			f"Only {available_qty:g} units available in {from_warehouse}, cannot move {quantity:g} units of {item_code}."
@@ -2734,12 +2744,14 @@ def move_bin_stock(item_code: str, from_warehouse: str, to_warehouse: str, quant
 	# Create Stock Entry (Material Transfer)
 	transfer = _create_stock_entry(
 		"Material Transfer",
-		[{
-			"item_code": item_code,
-			"qty": quantity,
-			"s_warehouse": from_warehouse,
-			"t_warehouse": to_warehouse,
-		}],
+		[
+			{
+				"item_code": item_code,
+				"qty": quantity,
+				"s_warehouse": from_warehouse,
+				"t_warehouse": to_warehouse,
+			}
+		],
 		company=company,
 	)
 
@@ -2814,7 +2826,14 @@ def get_bin_activity(item_code: str = None, warehouse: str = None, limit: int = 
 	actions_by_source = {}
 	for action in frappe.get_all(
 		"Inventory Action",
-		fields=["name", "reason_code", "notes", "source_document_type", "source_document_name", "created_by_user"],
+		fields=[
+			"name",
+			"reason_code",
+			"notes",
+			"source_document_type",
+			"source_document_name",
+			"created_by_user",
+		],
 	):
 		key = f"{action.source_document_type}:{action.source_document_name}"
 		actions_by_source[key] = action
@@ -2829,9 +2848,7 @@ def get_bin_activity(item_code: str = None, warehouse: str = None, limit: int = 
 	last_seen: dict[tuple, float] = {}
 	for sle in reversed(sle_rows):  # oldest -> newest
 		key = (sle.item_code, sle.warehouse)
-		previous_balance[sle.name] = last_seen.get(
-			key, flt(sle.qty_after_transaction) - flt(sle.actual_qty)
-		)
+		previous_balance[sle.name] = last_seen.get(key, flt(sle.qty_after_transaction) - flt(sle.actual_qty))
 		last_seen[key] = flt(sle.qty_after_transaction)
 
 	# Merge the data
@@ -2841,21 +2858,23 @@ def get_bin_activity(item_code: str = None, warehouse: str = None, limit: int = 
 		action = actions_by_source.get(action_key)
 		prior = previous_balance[sle.name]
 
-		activity.append({
-			"timestamp": f"{sle.posting_date} {sle.posting_time}",
-			"item_code": sle.item_code,
-			"warehouse": sle.warehouse,
-			"quantity_change": flt(sle.qty_after_transaction) - prior,
-			"previous_qty": prior,
-			"new_qty": flt(sle.qty_after_transaction),
-			"user": _user(sle.owner)["name"],
-			"reason": action.reason_code if action else sle.voucher_type,
-			"notes": action.notes if action else "",
-			"source_type": sle.voucher_type,
-			"source_name": sle.voucher_no,
-			"action_id": action.name if action else None,
-			"route": _route(sle.voucher_type, sle.voucher_no) if sle.voucher_no else "",
-		})
+		activity.append(
+			{
+				"timestamp": f"{sle.posting_date} {sle.posting_time}",
+				"item_code": sle.item_code,
+				"warehouse": sle.warehouse,
+				"quantity_change": flt(sle.qty_after_transaction) - prior,
+				"previous_qty": prior,
+				"new_qty": flt(sle.qty_after_transaction),
+				"user": _user(sle.owner)["name"],
+				"reason": action.reason_code if action else sle.voucher_type,
+				"notes": action.notes if action else "",
+				"source_type": sle.voucher_type,
+				"source_name": sle.voucher_no,
+				"action_id": action.name if action else None,
+				"route": _route(sle.voucher_type, sle.voucher_no) if sle.voucher_no else "",
+			}
+		)
 
 	return activity
 
