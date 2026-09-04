@@ -3,6 +3,30 @@
 This app is prepared for a Frappe Cloud bench running Frappe/ERPNext v16. The
 frontend build tooling expects Node 20.19 or newer.
 
+## Local → Prod, the simple version
+
+Edits happen in the working copy (`apps/soypaq`), not here. This repo is a
+sanitized copy of it. Getting a change live is five steps:
+
+1. **Copy the changed files** from the working copy into this repo.
+2. **Run the checks:**
+   ```bash
+   python scripts/check_sanitization.py
+   python scripts/check_doctypes.py
+   ruff check soypaq scripts
+   ruff format soypaq scripts
+   ```
+3. **Commit and push** `main` (and `staging`, kept in sync with `main`).
+4. **Frappe Cloud → your bench → "Update Available" → pick SoyPaq → pick the
+   site → Deploy and update site.** This one click builds AND migrates -
+   that's what actually ships it.
+5. **Check it worked:** open the app on the live site and look at the version
+   number in Settings, and check Frappe Cloud's **Jobs** tab for
+   `Update Site Migrate: Success`.
+
+That's it. Skipping step 4 is the #1 mistake - pushing to GitHub alone
+changes nothing live.
+
 ## Add the App
 
 1. Create or choose a Frappe Cloud bench on Frappe/ERPNext v16.
