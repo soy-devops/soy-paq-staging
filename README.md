@@ -103,6 +103,14 @@ bench --site <site-name> execute soypaq.tests.ci_smoke.run
 - Rewrite history before making a previously private staging repo public if any
   private notes were ever committed.
 
+The first rule above is enforced automatically: CI runs
+`scripts/check_sanitization.py` on every push and fails the build if a real
+client name appears in a public file, or if `CLOUD_DEPLOYMENT.md`'s stated
+Frappe version drifts from `pyproject.toml`. This exists because a client name
+was found in `PROJECT.md`/`CHANGELOG.md` during a deploy-readiness review
+(2026-09-03) - it had never been caught before that, only this rule being
+written down.
+
 ## License
 
 MIT

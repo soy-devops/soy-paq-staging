@@ -37,6 +37,20 @@ jobs:
       - name: Validate doctype JSON + controllers
         run: python scripts/check_doctypes.py
 
+  sanitize:
+    name: No client names or version drift in public docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Guards against a real client name (e.g. "Harmony") landing in a public
+      # file, and against CLOUD_DEPLOYMENT.md drifting from pyproject.toml's
+      # actual Frappe version pin.
+      - name: Check for banned terms and version drift
+        run: python scripts/check_sanitization.py
+
   frontend:
     name: Frontend build is in sync
     runs-on: ubuntu-latest

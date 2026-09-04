@@ -55,12 +55,18 @@ Run these before pushing a branch that a Frappe Cloud bench tracks:
 
 ```bash
 python scripts/check_doctypes.py
+python scripts/check_sanitization.py
 python -m compileall -q soypaq scripts
 ruff check soypaq scripts
 ruff format --check soypaq scripts
 cd ui && npm ci && npm run build && npm audit --omit=dev
 git diff --exit-code -- soypaq/public/wms
 ```
+
+`check_sanitization.py` is a CI-enforced gate, not just a local suggestion: it
+fails the build if a real client name shows up in a public file, or if this
+file's stated Frappe version drifts from `pyproject.toml`'s pin. Add new
+client names to its `BANNED_TERMS` list as they're onboarded.
 
 For a final go/no-go, install from the public repository into a clean local
 Frappe/ERPNext v16 bench and run:
