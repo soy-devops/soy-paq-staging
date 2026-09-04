@@ -69,3 +69,54 @@ Frappe/ERPNext v16 bench and run:
 bench --site <site-name> install-app soypaq
 bench --site <site-name> execute soypaq.tests.ci_smoke.run
 ```
+
+## Moving a Live Site to a New Bench
+
+Use this checklist whenever moving an existing Frappe Cloud site (e.g. a live
+production site on the Shared bench) onto a private bench, or onto an upgraded
+version of a private bench. Skipping the inventory step below is what caused a
+mismatched bench, a wrong Frappe version, and a missing-apps rebuild the first
+time this was done.
+
+**Step 0 — Inventory the live site first, before creating or touching any bench.**
+
+- Which bench/server is it actually on right now? (Shared bench and a private
+  bench are completely separate; deploying one does nothing for the other.)
+- What Frappe/ERPNext version is it running?
+- Full list of installed apps (Sites -> the site -> Apps).
+
+**Step 1 — Match the target bench to that inventory, not the other way around.**
+
+- Bench's Frappe Framework version must be the same as the live site's current
+  version, never lower. A site can only move to an equal or newer version.
+- Add the exact app list from Step 0, plus this custom app. Don't default to
+  whatever a fresh bench happens to start with.
+
+**Step 2 — Deploy the bench and confirm clean before going near the live site.**
+
+- All apps should show "Latest Version" with no failures in the Deploys tab.
+- Check that this app's own version pins (`pyproject.toml` Python/Frappe
+  constraints) match what the bench actually runs, to avoid a validation
+  failure like "Incompatible Python version" during deploy.
+
+**Step 3 — Decide test-site vs. direct move, as a conscious tradeoff.**
+
+- A throwaway test site costs money (private-bench sites have no free tier,
+  ~$25/mo minimum). Skipping it is a deliberate risk decision, not a default.
+
+**Step 4 — Move the live site to the new bench ("Move to Private Bench").**
+
+- This is the one step that touches real data (it installs apps and runs
+  migrations against the site's live database), so it should be the last
+  step, only after Steps 0-3 are clean.
+
+**Step 5 — Verify after the move.**
+
+- Site's Apps tab shows everything expected, all Active.
+- Spot-check the actual feature in the browser.
+- Run `soypaq.tests.ci_smoke.run` against the live site.
+
+**Step 6 — Clean up.**
+
+- Archive the old bench once the new one is confirmed stable, so it doesn't
+  linger as a half-configured leftover.
