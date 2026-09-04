@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs before every commit in this repo. Blocks the commit locally, before
+# anything is even saved to git history, if it would introduce a real client
+# name or a Frappe-version mismatch. This is the same check CI runs, just
+# earlier - CI catches it if this hook is skipped or not installed; this hook
+# catches it before the leak ever enters history at all.
+#
+# One-time setup (per machine): git config core.hooksPath .githooks
+
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! python3 scripts/check_sanitization.py; then
+	echo ""
+	echo "Commit blocked by scripts/check_sanitization.py (see above)."
+	echo "Fix the issue, or run 'git commit --no-verify' to bypass (not recommended)."
+	exit 1
+fi
