@@ -1,0 +1,135 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 0,
+ "autoname": "format:PA-{YYYY}-{#####}",
+ "creation": "2026-09-03 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "pick_task",
+  "item_code",
+  "item_name",
+  "column_break_pa01",
+  "action_type",
+  "exception_reason",
+  "quantity",
+  "warehouse",
+  "notes_section",
+  "note",
+  "image",
+  "created_by_user"
+ ],
+ "fields": [
+  {
+   "fieldname": "pick_task",
+   "fieldtype": "Link",
+   "label": "Pick Task",
+   "options": "Pick Task",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pa01",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "action_type",
+   "fieldtype": "Select",
+   "label": "Action",
+   "options": "Picked\nUnpicked\nHandpicked\nException\nCompleted",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "exception_reason",
+   "fieldtype": "Select",
+   "label": "Exception Reason",
+   "options": "\nDamaged\nNo Stock\nBarcode Issue\nShort Picked\nWrong Item"
+  },
+  {
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Bin",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Text",
+   "label": "Note"
+  },
+  {
+   "fieldname": "image",
+   "fieldtype": "Attach Image",
+   "label": "Photo"
+  },
+  {
+   "fieldname": "created_by_user",
+   "fieldtype": "Link",
+   "label": "Created By",
+   "options": "User",
+   "read_only": 1
+  }
+ ],
+ "index_web_link_count": 0,
+ "links": [],
+ "modified": "2026-09-03 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Pick Action",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Warehouse Operator",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "quick_entry": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

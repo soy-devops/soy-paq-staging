@@ -1,0 +1,180 @@
+{
+ "actions": [],
+ "allow_bulk_edit": 1,
+ "allow_rename": 0,
+ "autoname": "format:IA-{YYYY}-{#####}",
+ "creation": "2026-09-03 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "warehouse",
+  "column_break_dqtr",
+  "action_type",
+  "reason_code",
+  "details_section",
+  "quantity_delta",
+  "from_warehouse",
+  "column_break_wsxc",
+  "quantity",
+  "to_warehouse",
+  "notes_section",
+  "notes",
+  "source_section",
+  "source_document_type",
+  "source_document_name",
+  "created_by_user",
+  "column_break_kvpt",
+  "creation_timestamp"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_dqtr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "action_type",
+   "fieldtype": "Select",
+   "label": "Action",
+   "options": "Adjust Quantity\nMove Stock\nProvisional Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reason_code",
+   "fieldtype": "Select",
+   "label": "Reason",
+   "options": "Count Correction\nDamage\nPhysical Recount\nBin Error\nMissing\nWrong Bin\nExpiration\nQuality Hold\nOther\nProvisional",
+   "reqd": 1
+  },
+  {
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "quantity_delta",
+   "fieldtype": "Float",
+   "label": "Qty Adjusted (for Adjust Quantity actions)"
+  },
+  {
+   "fieldname": "from_warehouse",
+   "fieldtype": "Link",
+   "label": "From Warehouse (for Move Stock actions)",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "column_break_wsxc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "label": "Quantity Moved (for Move Stock actions)"
+  },
+  {
+   "fieldname": "to_warehouse",
+   "fieldtype": "Link",
+   "label": "To Warehouse (for Move Stock actions)",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Text",
+   "label": "Additional Notes"
+  },
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source Document"
+  },
+  {
+   "fieldname": "source_document_type",
+   "fieldtype": "Data",
+   "label": "Document Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_document_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Document Name",
+   "options": "source_document_type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "created_by_user",
+   "fieldtype": "Link",
+   "label": "Created By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_kvpt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "creation_timestamp",
+   "fieldtype": "Datetime",
+   "label": "Created At",
+   "read_only": 1
+  }
+ ],
+ "index_web_link_count": 0,
+ "links": [],
+ "modified": "2026-09-03 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Inventory Action",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 0,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Warehouse Operator",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "quick_entry": 1,
+ "sort_field": "modified",
+ "sort_order": "Descending",
+ "states": [],
+ "track_changes": 1
+}

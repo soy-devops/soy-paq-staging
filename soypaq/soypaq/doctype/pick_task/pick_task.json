@@ -16,6 +16,7 @@
   "column_break_ands",
   "warehouse",
   "assigned_to",
+  "claimed_at",
   "priority",
   "picking_tab",
   "picking_scanner_section",
@@ -87,6 +88,12 @@
    "fieldtype": "Link",
    "label": "Assigned To",
    "options": "User"
+  },
+  {
+   "fieldname": "claimed_at",
+   "fieldtype": "Datetime",
+   "label": "Claimed At",
+   "read_only": 1
   },
   {
    "fieldname": "priority",
@@ -193,7 +200,7 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Naming Series",
-   "options": "PICK-.#####",
+   "options": "PICK-MIA-.#####",
    "read_only": 1
   },
   {

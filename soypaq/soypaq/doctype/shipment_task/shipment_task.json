@@ -125,7 +125,7 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Naming Series",
-   "options": "SHIP-.#####",
+   "options": "SHIP-MIA-.#####",
    "read_only": 1
   },
   {

@@ -16,7 +16,9 @@
   "source_warehouse",
   "source_bin",
   "status",
-  "exception_reason"
+  "exception_reason",
+  "exception_note",
+  "exception_image"
  ],
  "fields": [
   {
@@ -87,6 +89,16 @@
    "fieldtype": "Select",
    "label": "Exception Reason",
    "options": "\nDamaged\nNo Stock\nBarcode Issue\nShort Picked\nWrong Item"
+  },
+  {
+   "fieldname": "exception_note",
+   "fieldtype": "Text",
+   "label": "Exception Note"
+  },
+  {
+   "fieldname": "exception_image",
+   "fieldtype": "Attach Image",
+   "label": "Exception Photo"
   }
  ],
  "grid_page_length": 50,

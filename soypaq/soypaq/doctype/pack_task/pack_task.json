@@ -235,7 +235,7 @@
    "fieldtype": "Select",
    "label": "Naming Series",
    "no_copy": 1,
-   "options": "PACK-.#####",
+   "options": "PACK-MIA-.#####",
    "print_hide": 1
   }
  ],

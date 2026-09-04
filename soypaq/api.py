@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import quote
 
 import frappe
-from frappe.utils import flt, now_datetime
+from frappe.utils import cint, flt, now_datetime
 
 MOBILE_DOCTYPES = {
 	"Inbound ASN",
@@ -86,6 +87,7 @@ def _list_shipment_tasks(limit: int = 50) -> list[dict]:
 			"carrier",
 			"tracking_number",
 			"modified",
+			"creation",
 			"warehouse",
 			"assigned_user",
 			"total_required_qty",
@@ -111,6 +113,7 @@ def _list_shipment_tasks(limit: int = 50) -> list[dict]:
 			"total_shipped_qty": flt(r.total_shipped_qty),
 			"image": images.get(r.name),
 			"modified": str(r.modified),
+			"created": str(r.creation),
 			"route": _route("Shipment Task", r.name),
 		}
 		for r in rows
@@ -128,6 +131,7 @@ def _list_receive_packages(limit: int = 50) -> list[dict]:
 			"status",
 			"carrier",
 			"modified",
+			"creation",
 			"target_warehouse",
 			"inbound_asn",
 		],
@@ -174,6 +178,7 @@ def _list_receive_packages(limit: int = 50) -> list[dict]:
 			"staged_lines": counts.get(r.name, {}).get("staged", 0),
 			"image": item_images.get(first_item_by_parent.get(r.name)),
 			"modified": str(r.modified),
+			"created": str(r.creation),
 			"route": _route("Inbound Package", r.name),
 		}
 		for r in rows
@@ -310,6 +315,7 @@ def _list_pick_tasks(limit: int = 50) -> list[dict]:
 			"status",
 			"assigned_to",
 			"modified",
+			"creation",
 			"total_required_qty",
 			"total_picked_qty",
 		],
@@ -339,6 +345,7 @@ def _list_pick_tasks(limit: int = 50) -> list[dict]:
 			"pack_task": pack_links.get(r.name, ""),
 			"image": images.get(r.name),
 			"modified": str(r.modified),
+			"created": str(r.creation),
 			"route": _route("Pick Task", r.name),
 		}
 		for r in rows
@@ -357,6 +364,7 @@ def _list_pack_tasks(limit: int = 50) -> list[dict]:
 			"warehouse",
 			"assigned_user",
 			"modified",
+			"creation",
 			"total_required_qty",
 			"total_packed_qty",
 		],
@@ -387,6 +395,7 @@ def _list_pack_tasks(limit: int = 50) -> list[dict]:
 			"shipment_task": ship_links.get(r.name, ""),
 			"image": images.get(r.name),
 			"modified": str(r.modified),
+			"created": str(r.creation),
 			"route": _route("Pack Task", r.name),
 		}
 		for r in rows
@@ -558,6 +567,18 @@ def _resolve_bin(code: str) -> str:
 		name = frappe.db.get_value("Warehouse", {"warehouse_name": code}, "name")
 	if not name:
 		name = frappe.db.get_value("Warehouse", {"name": ["like", f"%- {code} -%"]}, "name")
+	if not name:
+		# Bin codes are zero-padded (A01) so they sort correctly past A09, but printed
+		# labels and habit both say "A1". Accept either, in both directions, so a
+		# relabelling programme never has to be finished before scanning works.
+		padded = re.sub(r"^([A-Za-z]+)(\d+)$", lambda m: f"{m.group(1)}{m.group(2).zfill(2)}", code)
+		unpadded = re.sub(r"^([A-Za-z]+)0*(\d+)$", r"\1\2", code)
+		for variant in {padded, unpadded} - {code}:
+			name = frappe.db.get_value("Warehouse", {"warehouse_name": variant}, "name") or frappe.db.get_value(
+				"Warehouse", {"name": ["like", f"%- {variant} -%"]}, "name"
+			)
+			if name:
+				break
 	if not name:
 		frappe.throw(f"Bin {code} was not found in ERPNext.")
 	if frappe.db.get_value("Warehouse", name, "is_group"):
@@ -811,6 +832,8 @@ def _item_rows(doc, fieldname: str, quantity_field: str) -> list[dict]:
 				"source_bin": row.get("source_bin") or "",
 				"status": row.get("status") or row.get("condition") or "Expected",
 				"exception_reason": row.get("exception_reason") or "",
+				"exception_note": row.get("exception_note") or "",
+				"exception_image": row.get("exception_image") or "",
 			}
 		)
 	return rows
@@ -834,6 +857,7 @@ def _inventory_snapshot() -> dict:
 			"reserved_qty",
 			"projected_qty",
 			"ordered_qty",
+			"valuation_rate",
 		],
 		limit_page_length=5000,
 	)
@@ -849,9 +873,11 @@ def _inventory_snapshot() -> dict:
 	warehouse_totals: dict[str, dict] = {
 		warehouse.name: {"item_count": 0, "on_hand": 0.0, "reserved": 0.0} for warehouse in warehouses
 	}
+	stock_value = 0.0
 	for stock_bin in bins:
 		actual = float(stock_bin.actual_qty or 0)
 		reserved = float(stock_bin.reserved_qty or 0)
+		stock_value += actual * float(stock_bin.valuation_rate or 0)
 		location = {
 			"warehouse": stock_bin.warehouse,
 			"on_hand": actual,
@@ -860,7 +886,11 @@ def _inventory_snapshot() -> dict:
 			"projected": float(stock_bin.projected_qty or 0),
 			"incoming": float(stock_bin.ordered_qty or 0),
 		}
-		bins_by_item.setdefault(stock_bin.item_code, []).append(location)
+		if actual != 0:
+			# A Bin doc persists after it's been emptied out - skip zero-qty rows so
+			# the item detail's location list doesn't accumulate dead bins forever.
+			# Negative rows stay in: that's a real ledger discrepancy worth surfacing.
+			bins_by_item.setdefault(stock_bin.item_code, []).append(location)
 		if stock_bin.warehouse in warehouse_totals:
 			warehouse_totals[stock_bin.warehouse]["item_count"] += 1
 			warehouse_totals[stock_bin.warehouse]["on_hand"] += actual
@@ -928,6 +958,25 @@ def _inventory_snapshot() -> dict:
 				"reserved": float(stock_bin.reserved_qty or 0),
 			}
 		)
+	# Fetch recent activity per bin
+	bin_activity_map = {}
+	for action in frappe.get_all(
+		"Inventory Action",
+		fields=["warehouse", "item_code", "reason_code", "created_by_user", "creation"],
+		order_by="creation desc",
+		limit_page_length=500,
+	):
+		key = action.warehouse
+		if key not in bin_activity_map:
+			bin_activity_map[key] = []
+		if len(bin_activity_map[key]) < 3:
+			bin_activity_map[key].append({
+				"reason": action.reason_code,
+				"user": _user(action.created_by_user)["name"],
+				"timestamp": str(action.creation),
+				"item": action.item_code,
+			})
+
 	bin_rows = []
 	for warehouse in warehouses:
 		if not warehouse.parent_warehouse:
@@ -942,6 +991,7 @@ def _inventory_snapshot() -> dict:
 				"sku_count": len(contents),
 				"on_hand": sum(row["on_hand"] for row in contents),
 				"items": contents,
+				"action_history": bin_activity_map.get(warehouse.name, []),
 				"route": _route("Warehouse", warehouse.name),
 			}
 		)
@@ -960,6 +1010,7 @@ def _inventory_snapshot() -> dict:
 			"location_count": len(location_rows),
 			"stocked_bin_count": len([row for row in bin_rows if row["on_hand"] > 0]),
 			"staged_on_hand": sum(row["on_hand"] for row in bin_rows),
+			"stock_value": stock_value,
 		},
 	}
 
@@ -1032,6 +1083,8 @@ def claim_task(doctype: str, name: str) -> dict:
 				"Finish or release it before starting another."
 			)
 		doc.set(field, frappe.session.user)
+		if doctype == "Pick Task":
+			doc.claimed_at = now_datetime()
 		doc.save()
 		_publish_task_update(doc)
 	return {"name": doc.name, "assigned_to": _user(frappe.session.user)}
@@ -1052,6 +1105,17 @@ def release_task(doctype: str, name: str) -> dict:
 	doc.save()
 	_publish_task_update(doc)
 	return {"name": doc.name}
+
+
+@frappe.whitelist()
+def cancel_task(doctype: str, name: str) -> dict:
+	"""Cancel a task outright - claimed or not, unlike release_task, which only hands
+	back an existing claim and leaves the task sitting open."""
+	doc = _claimable_task(doctype, name)
+	doc.status = "Cancelled"
+	doc.save(ignore_permissions=True)
+	_publish_task_update(doc)
+	return {"name": doc.name, "status": doc.status}
 
 
 _MY_TASKS_DONE_STATUS = {
@@ -1106,8 +1170,58 @@ _TASK_PREVIEW_FIELDS = {
 	"Pick Task": ("pick_items", "required_qty"),
 	"Pack Task": ("pick_items", "required_qty"),
 	"Shipment Task": ("shipment_items", "required_qty"),
-	"Inbound Package": ("package_items", "quantity"),
+	# "quantity" is an expected-qty field that blind receiving deliberately leaves at 0
+	# ("nothing was expected" - see _package_row). received_qty is the truth for what's
+	# actually in the package, so that's what the preview should show.
+	"Inbound Package": ("package_items", "received_qty"),
 }
+
+
+def _pick_activity_rows(task_name: str, limit: int = 50) -> list[dict]:
+	rows = frappe.get_all(
+		"Pick Action",
+		filters={"pick_task": task_name},
+		fields=[
+			"name",
+			"item_code",
+			"item_name",
+			"action_type",
+			"exception_reason",
+			"quantity",
+			"warehouse",
+			"note",
+			"image",
+			"created_by_user",
+			"creation",
+		],
+		order_by="creation desc",
+		limit_page_length=limit,
+	)
+	return [
+		{
+			"item_code": r.item_code or "",
+			"item_name": r.item_name or "",
+			"action_type": r.action_type,
+			"exception_reason": r.exception_reason or "",
+			"quantity": flt(r.quantity),
+			"warehouse": r.warehouse or "",
+			"note": r.note or "",
+			"image": r.image or "",
+			"user": _user(r.created_by_user)["name"],
+			"timestamp": str(r.creation),
+			"route": _route("Pick Action", r.name),
+		}
+		for r in rows
+	]
+
+
+@frappe.whitelist()
+def get_pick_activity(task_name: str, limit: int = 50) -> list[dict]:
+	"""Per-scan audit trail for a Pick Task - powers the live activity view and,
+	once completed, the same task's History drawer."""
+	if not task_name or not frappe.db.exists("Pick Task", task_name):
+		frappe.throw(f"Pick Task {task_name or ''} was not found.")
+	return _pick_activity_rows(task_name, limit)
 
 
 @frappe.whitelist()
@@ -1125,7 +1239,39 @@ def get_task_preview(doctype: str, name: str) -> dict:
 	if not doc.has_permission("read"):
 		frappe.throw(f"You do not have permission to view {doctype} {name}.", frappe.PermissionError)
 	fieldname, quantity_field = _TASK_PREVIEW_FIELDS[doctype]
-	return {"name": doc.name, "items": _item_rows(doc, fieldname, quantity_field)}
+
+	source: dict = {}
+	source_integrity: dict = {}
+	if doctype in ("Pick Task", "Pack Task"):
+		source = _sales_order_context(doc.get("sales_order"))
+		source_integrity = _source_integrity(doc, source)
+	elif doctype == "Shipment Task":
+		# Same lineage as Pick/Pack, but _source_integrity compares against a
+		# "pick_items" fieldname that Shipment Task doesn't have - showing origin
+		# here without a (meaningless) match/mismatch verdict.
+		source = _sales_order_context(doc.get("sales_order"))
+	elif doctype == "Inbound Package" and doc.get("inbound_asn"):
+		source = {
+			"doctype": "Inbound ASN",
+			"name": doc.get("inbound_asn"),
+			"route": _route("Inbound ASN", doc.get("inbound_asn")),
+		}
+
+	extra: dict = {}
+	if doctype == "Pick Task":
+		extra["claimed_at"] = str(doc.claimed_at) if doc.get("claimed_at") else ""
+		extra["assigned_to"] = _user(doc.get("assigned_to"))
+		extra["activity"] = _pick_activity_rows(doc.name)
+
+	return {
+		"name": doc.name,
+		"items": _item_rows(doc, fieldname, quantity_field),
+		"source": source,
+		"source_integrity": source_integrity,
+		"created": str(doc.creation),
+		"modified": str(doc.modified),
+		**extra,
+	}
 
 
 def _writable_task(doctype: str, name: str):
@@ -1153,6 +1299,43 @@ def _task_row(doc, item_code: str):
 	if frappe.db.get_value("Item", resolved_code, "disabled"):
 		frappe.throw(f"Item {resolved_code} is disabled in ERPNext.")
 	return row
+
+
+def _log_pick_action(
+	pick_task,
+	action_type: str,
+	item_code: str = "",
+	quantity: float = 0,
+	exception_reason: str = "",
+	note: str = "",
+	image: str = "",
+) -> None:
+	"""Append one immutable event to the Pick Action log.
+
+	Mirrors Inventory Action's role for stock adjustments: pick_item/unpick_item/
+	flag_pick_item/complete_pick all call this so the History drawer and the live
+	timer have a real per-event trail instead of the single `last_scan_action`
+	string the Pick Task doc itself overwrites on every scan.
+	"""
+	warehouse = ""
+	if item_code:
+		row = next((r for r in pick_task.get("pick_items") or [] if r.get("item_code") == item_code), None)
+		warehouse = (row.get("source_bin") or row.get("source_warehouse")) if row else ""
+	frappe.get_doc(
+		{
+			"doctype": "Pick Action",
+			"pick_task": pick_task.name,
+			"item_code": item_code or None,
+			"item_name": frappe.db.get_value("Item", item_code, "item_name") if item_code else "",
+			"action_type": action_type,
+			"exception_reason": exception_reason,
+			"quantity": quantity,
+			"warehouse": warehouse or pick_task.get("warehouse"),
+			"note": note,
+			"image": image,
+			"created_by_user": frappe.session.user,
+		}
+	).insert(ignore_permissions=True)
 
 
 def _publish_task_update(doc) -> None:
@@ -1188,6 +1371,9 @@ def _sync_pack_from_pick(pick_task) -> None:
 		filters={"warehouse": pick_task.name, "status": ["not in", ["Completed", "Cancelled"]]},
 		pluck="name",
 	)
+	if not pack_names and pick_task.status == "Completed":
+		_create_pack_task_from_pick(pick_task)
+		return
 	for name in pack_names:
 		pack_task = frappe.get_doc("Pack Task", name)
 		for row in pack_task.get("pick_items") or []:
@@ -1198,6 +1384,42 @@ def _sync_pack_from_pick(pick_task) -> None:
 		)
 		pack_task.save(ignore_permissions=True)
 		_publish_task_update(pack_task)
+
+
+def _create_pack_task_from_pick(pick_task) -> None:
+	"""Give a completed Pick Task its Pack Task - the handoff `_sync_pack_from_pick`
+	never performed on its own, only ever updating a Pack Task that already existed."""
+	rows = [row for row in pick_task.get("pick_items") or [] if flt(row.picked_qty) > 0]
+	if not rows:
+		return
+	doc = frappe.new_doc("Pack Task")
+	doc.naming_series = "PACK-MIA-.#####"
+	doc.status = "Pending"
+	doc.customer = pick_task.get("customer")
+	doc.sales_order = pick_task.get("sales_order")
+	doc.warehouse = pick_task.name
+	doc.assigned_to = "Carton Box"
+	doc.pack_state = "Waiting for Item"
+	doc.scan_item_barcode = rows[0].item_code
+	doc.current_status = f"Ready for packing - from {pick_task.name}"
+	for row in rows:
+		doc.append(
+			"pick_items",
+			{
+				"item_code": row.item_code,
+				"item_name": row.item_name,
+				"uom": row.get("uom"),
+				"required_qty": row.picked_qty,
+				"picked_qty": row.picked_qty,
+				"packed_qty": 0,
+				"source_warehouse": row.get("source_warehouse"),
+				"source_bin": row.get("source_bin"),
+				"status": "Pending",
+			},
+		)
+	_update_pack_totals(doc)
+	doc.insert(ignore_permissions=True)
+	_publish_task_update(doc)
 
 
 @frappe.whitelist()
@@ -1324,6 +1546,8 @@ def get_mobile_bootstrap(
 				"task_customer": pick_task.get("customer") if pick_task else "",
 				"warehouse": pick_task.get("warehouse") if pick_task else "",
 				"assigned_to": _user(pick_task.get("assigned_to") if pick_task else None),
+				"claimed_at": str(pick_task.get("claimed_at")) if pick_task and pick_task.get("claimed_at") else "",
+				"created": str(pick_task.creation) if pick_task else "",
 				"source_integrity": _source_integrity(pick_task, pick_order),
 				"pack_task_name": (
 					frappe.db.get_value("Pack Task", {"warehouse": pick_task.name}, "name")
@@ -1418,7 +1642,7 @@ def create_inbound_asn(
 	carrier = carrier or "Other"
 
 	asn = frappe.new_doc("Inbound ASN")
-	asn.naming_series = "ASN-.#####"
+	asn.naming_series = "ASN-MIA-.#####"
 	asn.customer = customer
 	asn.status = "Expected"
 	asn.target_warehouse = target_warehouse
@@ -1429,7 +1653,7 @@ def create_inbound_asn(
 	asn.insert()
 
 	package = frappe.new_doc("Inbound Package")
-	package.naming_series = "SPQ-.#####"
+	package.naming_series = "SPQ-MIA-.#####"
 	package.inbound_asn = asn.name
 	package.customer = customer
 	package.target_warehouse = target_warehouse
@@ -1454,6 +1678,155 @@ def create_inbound_asn(
 	return {"asn": asn.name, "package": package.name, "route": _route("Inbound Package", package.name)}
 
 
+@frappe.whitelist()
+def start_receiving_session(
+	customer: str, target_warehouse: str = None, tracking_number: str = None
+) -> dict:
+	"""Open a blank receiving session for a box that arrived with no advance notice.
+
+	No ASN is created and no tracking number is invented. `customer` is required and
+	deliberately has no default: in a multi-client 3PL, silently assigning a box to the
+	wrong owner is the error that surfaces months later at reconciliation.
+
+	Scanning a tracking number that already has an open package RESUMES it rather than
+	forking a second one.
+	"""
+	customer = (customer or "").strip()
+	if not customer:
+		frappe.throw("Choose which client this package belongs to before receiving it.")
+	if not frappe.db.exists("Customer", customer):
+		frappe.throw(f"Customer {customer} was not found in ERPNext.")
+
+	tracking_number = (tracking_number or "").strip()
+	if tracking_number:
+		existing = frappe.db.get_value(
+			"Inbound Package",
+			{"external_tracking_number": tracking_number, "status": ["not in", DONE_STATUSES["Inbound Package"]]},
+			"name",
+		)
+		if existing:
+			return {
+				"name": existing,
+				"resumed": True,
+				"route": _route("Inbound Package", existing),
+			}
+
+	# Resolved by zone, not via DEFAULT_COMPANY: the company must be resolvable per
+	# package, never assumed site-wide, and the public build's placeholder company
+	# matches nothing on a real site.
+	target_warehouse = (target_warehouse or "").strip() or _zone_warehouse("Receiving")
+	if not target_warehouse:
+		frappe.throw(
+			"No receiving warehouse was found. Pass target_warehouse explicitly, or create a "
+			"leaf warehouse whose name contains 'Receiving'."
+		)
+
+	package = frappe.new_doc("Inbound Package")
+	package.naming_series = "SPQ-MIA-.#####"
+	package.customer = customer
+	package.target_warehouse = target_warehouse
+	package.status = "Received"
+	package.scan_state = "Waiting for Item"
+	if tracking_number:
+		package.external_tracking_number = tracking_number
+	package.insert()
+	_publish_task_update(package)
+	return {"name": package.name, "resumed": False, "route": _route("Inbound Package", package.name)}
+
+
+def _resolve_scanned_item(code: str) -> str | None:
+	"""Tier 1 resolution: a scanned code -> a real Item, by barcode then by item code.
+
+	Deliberately an exact lookup with no parsing. Interpreting a structured code such as
+	`RED-DRG-S` is Tier 2, needs Item Variants and a per-client rule, and is Phase 2.
+	"""
+	code = (code or "").strip()
+	if not code:
+		return None
+	parent = frappe.db.get_value("Item Barcode", {"barcode": code}, "parent")
+	if parent and not frappe.db.get_value("Item", parent, "disabled"):
+		return parent
+	if frappe.db.exists("Item", code) and not frappe.db.get_value("Item", code, "disabled"):
+		return code
+	return None
+
+
+@frappe.whitelist()
+def receive_scan(package_name: str, code: str, quantity: float = 1) -> dict:
+	"""Scan an item into a receiving session.
+
+	Tier 1 (known barcode) confirms the quantity straight away - a repeat scan of the
+	same code simply increments. Anything unresolved comes back `resolved: False` so the
+	caller can offer provisional capture; it is never an error.
+	"""
+	doc = _writable_package(package_name)
+	code = (code or "").strip()
+	if not code:
+		frappe.throw("Scan or enter an item barcode.")
+
+	item_code = _resolve_scanned_item(code)
+	if not item_code:
+		return {"resolved": False, "code": code, "package": doc.name}
+
+	result = receive_item(doc.name, item_code, quantity)
+	result["resolved"] = True
+	result["tier"] = 1
+	return result
+
+
+@frappe.whitelist()
+def capture_provisional_item(
+	package_name: str, code: str, item_name: str, quantity: float = 1, notes: str = ""
+) -> dict:
+	"""Tier 3: record something nobody can identify, and keep the box moving.
+
+	Creates a real Item (stock cannot be posted against a non-existent one) in a clearly
+	marked group, attaches the scanned code as its barcode, and logs an Inventory Action
+	so the item lands in a review queue instead of quietly becoming permanent catalogue
+	data. The worker never blocks waiting for someone with catalogue access.
+	"""
+	doc = _writable_package(package_name)
+	code = (code or "").strip()
+	item_name = (item_name or "").strip()
+	if not code or not item_name:
+		frappe.throw("A scanned code and a description are both required.")
+
+	existing = _resolve_scanned_item(code)
+	if existing:
+		return receive_scan(doc.name, code, quantity)
+
+	if not frappe.db.exists("Item Group", PROVISIONAL_ITEM_GROUP):
+		group = frappe.new_doc("Item Group")
+		group.item_group_name = PROVISIONAL_ITEM_GROUP
+		group.parent_item_group = "All Item Groups"
+		group.is_group = 0
+		group.insert(ignore_permissions=True)
+
+	item = frappe.new_doc("Item")
+	item.item_code = code
+	item.item_name = item_name
+	item.item_group = PROVISIONAL_ITEM_GROUP
+	item.stock_uom = "Nos"
+	item.is_stock_item = 1
+	item.append("barcodes", {"barcode": code, "barcode_type": "CODE-39"})
+	item.insert(ignore_permissions=True)
+
+	action = frappe.new_doc("Inventory Action")
+	action.item_code = item.name
+	action.warehouse = doc.get("target_warehouse")
+	action.action_type = "Provisional Item"
+	action.reason_code = "Provisional"
+	action.notes = notes or f"Captured during receiving on {doc.name} as '{item_name}'"
+	action.source_document_type = "Inbound Package"
+	action.source_document_name = doc.name
+	action.created_by_user = frappe.session.user
+	action.insert(ignore_permissions=True)
+
+	result = receive_item(doc.name, item.name, quantity)
+	result.update({"resolved": True, "tier": 3, "provisional": True, "action_id": action.name})
+	return result
+
+
 def _writable_package(name: str):
 	if not name or not frappe.db.exists("Inbound Package", name):
 		frappe.throw(f"Inbound Package {name or ''} was not found.")
@@ -1465,29 +1838,60 @@ def _writable_package(name: str):
 	return doc
 
 
-def _package_row(doc, item_code: str):
+PROVISIONAL_ITEM_GROUP = "Provisional - Needs Review"
+
+
+def _zone_warehouse(zone: str, company: str | None = None) -> str | None:
+	"""Resolve a named zone (e.g. "Damaged", "Receiving") to a leaf Warehouse."""
+	filters = {"is_group": 0, "disabled": 0, "warehouse_name": ["like", f"%{zone}%"]}
+	if company:
+		filters["company"] = company
+	return frappe.db.get_value("Warehouse", filters, "name", order_by="name asc")
+
+
+def _package_row(doc, item_code: str, create: bool = False, item_name: str = None, barcode: str = None):
+	"""Find a line on the package, optionally adding one that was never expected.
+
+	Receiving here is *discovery*: nobody tells the warehouse what is arriving, so an
+	item that is not already on the package is the normal case, not an error. Callers
+	that are genuinely correcting an existing line pass create=False.
+	"""
 	item_code = (item_code or "").strip()
 	if not item_code:
 		frappe.throw("Scan or enter an item barcode.")
 	row = next((row for row in doc.get("package_items") or [] if row.get("item_code") == item_code), None)
-	if not row:
-		frappe.throw(f"Item {item_code} is not expected on Inbound Package {doc.name}.")
-	return row
+	if row:
+		return row
+	if not create:
+		frappe.throw(f"Item {item_code} is not on Inbound Package {doc.name}.")
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(f"Item {item_code} does not exist - capture it as a provisional item first.")
+	return doc.append(
+		"package_items",
+		{
+			"item_code": item_code,
+			"item_name": item_name or frappe.db.get_value("Item", item_code, "item_name") or item_code,
+			"barcode": barcode or item_code,
+			"quantity": 0,  # nothing was "expected" - received_qty is the truth
+			"received_qty": 0,
+			"condition": "Good",
+			"target_warehouse": doc.get("target_warehouse"),
+		},
+	)
 
 
 @frappe.whitelist()
 def receive_item(package_name: str, item_code: str, quantity: float = 1) -> dict:
 	"""Confirm a quantity of a single expected item was physically counted."""
 	doc = _writable_package(package_name)
-	row = _package_row(doc, item_code)
+	row = _package_row(doc, item_code, create=True)
 	if row.get("assigned_bin"):
 		frappe.throw(f"{row.item_code} is already staged - it can no longer be re-confirmed.")
 	quantity = flt(quantity)
 	if quantity <= 0:
 		frappe.throw("Confirm quantity must be greater than zero.")
-	remaining = max(flt(row.get("quantity")) - flt(row.get("received_qty")), 0)
-	if quantity > remaining:
-		frappe.throw(f"Only {remaining:g} units remain to confirm for {row.item_code}.")
+	# No cap. In blind receiving there is no expected quantity to over-receive against -
+	# received_qty *is* the truth. Any `quantity` on the row is advisory only.
 	row.received_qty = flt(row.get("received_qty")) + quantity
 	row.condition = row.get("condition") or "Good"
 	doc.status = "Inspecting"
@@ -1559,7 +1963,13 @@ def flag_receive_item(package_name: str, item_code: str, reason: str) -> dict:
 
 @frappe.whitelist()
 def stage_item(package_name: str, item_code: str, bin_code: str) -> dict:
-	"""Put away a confirmed item into a real bin - this is a real, submitted stock receipt."""
+	"""Assign a confirmed item to a real bin.
+
+	This no longer posts stock. Staging one Stock Entry per item made a 40-line box
+	produce 40 vouchers; the whole package now posts a single Stock Entry when the
+	session is finished (see complete_receipt). The row is saved as it is scanned, so
+	nothing is lost if the session is interrupted - only the stock posting is deferred.
+	"""
 	doc = _writable_package(package_name)
 	row = _package_row(doc, item_code)
 	if row.get("assigned_bin"):
@@ -1568,31 +1978,38 @@ def stage_item(package_name: str, item_code: str, bin_code: str) -> dict:
 		frappe.throw(f"Confirm {row.item_code} before staging it.")
 	bin_warehouse = _resolve_bin(bin_code)
 
-	company = _warehouse_company(bin_warehouse) or _warehouse_company(doc.get("target_warehouse"))
-	_create_stock_entry(
-		"Material Receipt",
-		[
-			{
-				"item_code": row.item_code,
-				"qty": flt(row.get("received_qty")),
-				"uom": row.get("uom"),
-				"t_warehouse": bin_warehouse,
-			}
-		],
-		company=company,
-	)
+	# Damaged stock must not land in normal storage counting as available. Route it to
+	# the Damaged warehouse so the condition flag has an actual stock consequence.
+	routed = False
+	if row.get("condition") == "Damaged":
+		company = _warehouse_company(bin_warehouse) or _warehouse_company(doc.get("target_warehouse"))
+		damaged = _zone_warehouse("Damaged", company)
+		if damaged and damaged != bin_warehouse:
+			bin_warehouse = damaged
+			routed = True
 
 	row.assigned_bin = bin_warehouse
 	doc.status = "Inspecting"
-	doc.last_scan_action = f"Staged {row.item_code} to {bin_warehouse}"
+	doc.last_scan_action = (
+		f"Staged {row.item_code} to {bin_warehouse}" + (" (damaged - rerouted)" if routed else "")
+	)
 	doc.save()
 	_publish_task_update(doc)
-	return {"name": doc.name, "item_code": row.item_code, "assigned_bin": bin_warehouse}
+	return {
+		"name": doc.name,
+		"item_code": row.item_code,
+		"assigned_bin": bin_warehouse,
+		"rerouted_as_damaged": routed,
+	}
 
 
 @frappe.whitelist()
 def complete_receipt(package_name: str) -> dict:
-	"""Confirm every received item has been staged into a bin, then close out the package."""
+	"""Post the whole package as ONE Stock Entry, then close out the session.
+
+	This is the commit point. Rows were saved as they were scanned, but no stock moved
+	until now - so a 40-line package produces one Material Receipt instead of forty.
+	"""
 	doc = _writable_package(package_name)
 	pending = [
 		row.item_code
@@ -1601,6 +2018,24 @@ def complete_receipt(package_name: str) -> dict:
 	]
 	if pending:
 		frappe.throw(f"Stage every item into a bin before storing: {', '.join(pending)}")
+
+	postable = [
+		{
+			"item_code": row.item_code,
+			"qty": flt(row.get("received_qty")),
+			"uom": row.get("uom"),
+			"t_warehouse": row.get("assigned_bin"),
+		}
+		for row in doc.get("package_items") or []
+		if row.get("assigned_bin") and flt(row.get("received_qty")) > 0
+	]
+	if postable:
+		company = _warehouse_company(postable[0]["t_warehouse"]) or _warehouse_company(
+			doc.get("target_warehouse")
+		)
+		entry = _create_stock_entry("Material Receipt", postable, company=company)
+		doc.stock_entry_reference = entry.name
+
 	doc.status = "Stored"
 	doc.received_by = frappe.session.user
 	doc.received_at = now_datetime()
@@ -1622,12 +2057,22 @@ def create_pick_task(customer: str = None, warehouse: str = None, items=None) ->
 	confirm_pick_location / pick_item / unpick_item / flag_pick_item / complete_pick.
 	"""
 	rows = _parse_manual_items(items)
-	warehouse = warehouse or _default_warehouse("Storage")
+	# Zone-resolved, not DEFAULT_COMPANY-resolved: the sanitized public-mirror constant
+	# matches nothing on a real site, which made this throw for every real caller.
+	warehouse = warehouse or _zone_warehouse("Storage")
 	if not warehouse:
 		frappe.throw("No warehouse is configured in ERPNext.")
 
+	if not customer:
+		# DEFAULT_TEST_CUSTOMER is the same sanitized-mirror problem as DEFAULT_COMPANY -
+		# infer from the warehouse's company instead, which matches on this site because
+		# a 3PL tenant's Customer and Company share a name by convention (see AGENT.md).
+		company = _warehouse_company(warehouse)
+		if company and frappe.db.exists("Customer", company):
+			customer = company
+
 	doc = frappe.new_doc("Pick Task")
-	doc.naming_series = "PICK-.#####"
+	doc.naming_series = "PICK-MIA-.#####"
 	doc.status = "Pending"
 	doc.customer = _resolve_customer(customer)
 	doc.warehouse = warehouse
@@ -1701,6 +2146,7 @@ def pick_item(task_name: str, item_code: str, quantity: float = 1) -> dict:
 	doc.last_scan_action = f"Picked {quantity:g} x {row.item_code}"
 	_update_pick_totals(doc)
 	doc.save()
+	_log_pick_action(doc, "Picked", row.item_code, quantity)
 	_sync_pack_from_pick(doc)
 	_publish_task_update(doc)
 	return {"name": doc.name, "item_code": row.item_code, "picked_qty": row.picked_qty}
@@ -1727,6 +2173,7 @@ def unpick_item(task_name: str, item_code: str, quantity: float = 1) -> dict:
 	doc.last_scan_action = f"Removed {quantity:g} x {row.item_code}"
 	_update_pick_totals(doc)
 	doc.save()
+	_log_pick_action(doc, "Unpicked", row.item_code, quantity)
 	_sync_pack_from_pick(doc)
 	_publish_task_update(doc)
 	return {"name": doc.name, "item_code": row.item_code, "picked_qty": row.picked_qty}
@@ -1757,9 +2204,20 @@ def pick_all(task_name: str) -> dict:
 
 @frappe.whitelist()
 def flag_pick_item(
-	task_name: str, item_code: str, reason: str, handpick: int = 0, quantity: float = 0
+	task_name: str,
+	item_code: str,
+	reason: str,
+	handpick: int = 0,
+	quantity: float = 0,
+	note: str = "",
+	image: str = "",
 ) -> dict:
 	"""Persist a manual pick action or exception reason on a Pick Task row."""
+	# Whitelisted args arrive as strings off the wire; "0" is truthy in Python, so
+	# `if handpick:` on the raw value treated every reason-button flag (which sends
+	# handpick=0) as a handpick - silently marking Short/Damaged/Wrong Item/No Stock
+	# rows "Picked" instead of "Short". cint() is the real bool.
+	handpick = cint(handpick)
 	doc = _writable_task("Pick Task", task_name)
 	if doc.get("pick_state") != "Waiting for Item":
 		frappe.throw("Confirm the pick location before updating an item.")
@@ -1781,12 +2239,26 @@ def flag_pick_item(
 		row.status = "Short"
 
 	row.exception_reason = reason
+	note = (note or "").strip()
+	if note:
+		row.exception_note = note
+	if image:
+		row.exception_image = image
 	doc.status = "Picking"
 	doc.scan_item_barcode = item_code
 	doc.last_scanned_row = row.name
 	doc.last_scan_action = f"{'Handpicked' if handpick else 'Flagged'} {row.item_code}: {reason}"
 	_update_pick_totals(doc)
 	doc.save()
+	_log_pick_action(
+		doc,
+		"Handpicked" if handpick else "Exception",
+		row.item_code,
+		quantity,
+		exception_reason=reason,
+		note=note,
+		image=image,
+	)
 	_sync_pack_from_pick(doc)
 	_publish_task_update(doc)
 	return {"name": doc.name, "item_code": row.item_code, "status": row.status, "exception_reason": reason}
@@ -1806,6 +2278,7 @@ def complete_pick(task_name: str) -> dict:
 	doc.completed_by = frappe.session.user
 	doc.completed_at = now_datetime()
 	doc.save()
+	_log_pick_action(doc, "Completed", quantity=doc.total_picked_qty)
 	_sync_pack_from_pick(doc)
 	_publish_task_update(doc)
 	return {"name": doc.name, "status": doc.status}
@@ -1824,7 +2297,7 @@ def create_pack_task(
 	warehouse = _default_warehouse("Storage")
 
 	doc = frappe.new_doc("Pack Task")
-	doc.naming_series = "PACK-.#####"
+	doc.naming_series = "PACK-MIA-.#####"
 	doc.status = "Pending"
 	doc.customer = _resolve_customer(customer)
 	doc.assigned_to = package_type or "Carton Box"
@@ -1952,6 +2425,8 @@ def complete_pack(task_name: str) -> dict:
 	doc.save()
 
 	shipment_names = frappe.get_all("Shipment Task", filters={"warehouse": doc.name}, pluck="name")
+	if not shipment_names:
+		_create_shipment_task_from_pack(doc)
 	for name in shipment_names:
 		shipment = frappe.get_doc("Shipment Task", name)
 		if shipment.status not in ("Shipped", "Cancelled"):
@@ -1960,6 +2435,42 @@ def complete_pack(task_name: str) -> dict:
 			_publish_task_update(shipment)
 	_publish_task_update(doc)
 	return {"name": doc.name, "status": doc.status}
+
+
+def _create_shipment_task_from_pack(pack_task) -> None:
+	"""Give a completed Pack Task its Shipment Task - complete_pack() previously only
+	ever updated a Shipment Task that already existed, same gap as Pick -> Pack."""
+	rows = [row for row in pack_task.get("pick_items") or [] if flt(row.packed_qty) > 0]
+	if not rows:
+		return
+	doc = frappe.new_doc("Shipment Task")
+	doc.naming_series = "SHIP-MIA-.#####"
+	doc.status = "Ready to Ship"
+	doc.customer = pack_task.get("customer")
+	doc.sales_order = pack_task.get("sales_order")
+	doc.warehouse = pack_task.name
+	doc.carrier = "UPS"
+	for row in rows:
+		doc.append(
+			"shipment_items",
+			{
+				"item_code": row.item_code,
+				"item_name": row.item_name,
+				"uom": row.get("uom"),
+				"required_qty": row.packed_qty,
+				"packed_qty": row.packed_qty,
+				"shipped_qty": 0,
+				"source_warehouse": row.get("source_warehouse"),
+				"source_bin": row.get("source_bin"),
+				"status": "Ready",
+			},
+		)
+	doc.total_items = len(rows)
+	doc.total_required_qty = sum(flt(row.packed_qty) for row in rows)
+	doc.total_packed_qty = doc.total_required_qty
+	doc.total_shipped_qty = 0
+	doc.insert(ignore_permissions=True)
+	_publish_task_update(doc)
 
 
 @frappe.whitelist()
@@ -1976,7 +2487,7 @@ def create_shipment_task(
 	warehouse = _default_warehouse("Storage")
 
 	doc = frappe.new_doc("Shipment Task")
-	doc.naming_series = "SHIP-.#####"
+	doc.naming_series = "SHIP-MIA-.#####"
 	doc.status = "Ready to Ship"
 	doc.customer = _resolve_customer(customer)
 	doc.carrier = carrier or "UPS"
@@ -2077,6 +2588,276 @@ def mark_shipment_shipped(task_name: str) -> dict:
 def get_inventory() -> dict:
 	"""Return a fresh ERPNext stock and warehouse snapshot for the WMS."""
 	return _inventory_snapshot()
+
+
+@frappe.whitelist()
+def adjust_bin_qty(item_code: str, warehouse: str, quantity_delta: float, reason_code: str, notes: str = "") -> dict:
+	"""Correct a bin's quantity via Stock Reconciliation.
+
+	`quantity_delta` is the adjustment: positive to add stock, negative to remove.
+	Posts a real Stock Reconciliation and creates an Inventory Action record linking to it.
+	"""
+	item_code = (item_code or "").strip()
+	warehouse = (warehouse or "").strip()
+	if not item_code or not warehouse:
+		frappe.throw("Item code and warehouse are required.")
+
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(f"Item {item_code} was not found in ERPNext.")
+	if frappe.db.get_value("Item", item_code, "disabled"):
+		frappe.throw(f"Item {item_code} is disabled.")
+
+	if not frappe.db.exists("Warehouse", warehouse):
+		frappe.throw(f"Warehouse {warehouse} was not found in ERPNext.")
+	if frappe.db.get_value("Warehouse", warehouse, ["is_group", "disabled"], as_dict=True) in [
+		{"is_group": 1, "disabled": 0}, {"is_group": 0, "disabled": 1}, {"is_group": 1, "disabled": 1}
+	]:
+		frappe.throw(f"Warehouse {warehouse} is a zone or is disabled - choose a leaf bin.")
+
+	quantity_delta = flt(quantity_delta)
+	if quantity_delta == 0:
+		frappe.throw("Quantity adjustment cannot be zero.")
+
+	company = _warehouse_company(warehouse)
+	if not company:
+		frappe.throw(f"Could not determine company for warehouse {warehouse}.")
+
+	# Get current bin state
+	current_qty = flt(frappe.db.get_value(
+		"Bin",
+		{"item_code": item_code, "warehouse": warehouse},
+		"actual_qty"
+	) or 0)
+	new_qty = max(current_qty + quantity_delta, 0)
+
+	# Carry the bin's existing valuation forward; fall back to the item's own rate.
+	# A1-style bins can legitimately sit at 0.0, and a bin that has never held stock
+	# has no Bin row at all - in both cases ERPNext cannot infer a rate on its own.
+	valuation_rate = flt(
+		frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "valuation_rate")
+		or frappe.db.get_value("Item", item_code, "valuation_rate")
+		or 0
+	)
+
+	# Create Stock Reconciliation. `purpose`, `posting_date` and `posting_time` are all
+	# mandatory - note there is no `reconciliation_date` field on this doctype.
+	recon = frappe.new_doc("Stock Reconciliation")
+	recon.company = company
+	recon.purpose = "Stock Reconciliation"
+	recon.set_posting_time = 1
+	recon.posting_date = frappe.utils.today()
+	recon.posting_time = frappe.utils.nowtime()
+	recon.append("items", {
+		"item_code": item_code,
+		"warehouse": warehouse,
+		"qty": new_qty,
+		"valuation_rate": valuation_rate,
+		"allow_zero_valuation_rate": 1 if not valuation_rate else 0,
+	})
+	recon.insert()
+	recon.submit()
+
+	# Create Inventory Action annotation
+	action = frappe.new_doc("Inventory Action")
+	action.item_code = item_code
+	action.warehouse = warehouse
+	action.action_type = "Adjust Quantity"
+	action.reason_code = reason_code
+	action.quantity_delta = quantity_delta
+	action.notes = notes
+	action.source_document_type = "Stock Reconciliation"
+	action.source_document_name = recon.name
+	action.created_by_user = frappe.session.user
+	action.insert()
+
+	return {
+		"name": recon.name,
+		"item_code": item_code,
+		"warehouse": warehouse,
+		"previous_qty": current_qty,
+		"new_qty": new_qty,
+		"quantity_delta": quantity_delta,
+		"action_id": action.name,
+	}
+
+
+@frappe.whitelist()
+def move_bin_stock(item_code: str, from_warehouse: str, to_warehouse: str, quantity: float, reason_code: str, notes: str = "") -> dict:
+	"""Move stock between bins via Stock Entry (Material Transfer).
+
+	Posts a real Stock Entry and creates an Inventory Action record linking to it.
+	Validates adequate stock in the source bin.
+	"""
+	item_code = (item_code or "").strip()
+	from_warehouse = (from_warehouse or "").strip()
+	to_warehouse = (to_warehouse or "").strip()
+	if not item_code or not from_warehouse or not to_warehouse:
+		frappe.throw("Item code and both warehouses are required.")
+
+	if from_warehouse == to_warehouse:
+		frappe.throw("Source and destination bins cannot be the same.")
+
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(f"Item {item_code} was not found in ERPNext.")
+	if frappe.db.get_value("Item", item_code, "disabled"):
+		frappe.throw(f"Item {item_code} is disabled.")
+
+	# Operators scan a short bin label ("A1"), not the full internal warehouse name.
+	# _resolve_bin accepts either, and already rejects group warehouses.
+	from_warehouse = _resolve_bin(from_warehouse)
+	to_warehouse = _resolve_bin(to_warehouse)
+	if from_warehouse == to_warehouse:
+		frappe.throw("Source and destination bins cannot be the same.")
+	for wh in [from_warehouse, to_warehouse]:
+		if frappe.db.get_value("Warehouse", wh, "disabled"):
+			frappe.throw(f"Warehouse {wh} is disabled - choose an active bin.")
+
+	quantity = flt(quantity)
+	if quantity <= 0:
+		frappe.throw("Quantity must be greater than zero.")
+
+	# Verify source has sufficient stock
+	available_qty = flt(frappe.db.get_value(
+		"Bin",
+		{"item_code": item_code, "warehouse": from_warehouse},
+		"actual_qty"
+	) or 0)
+	if available_qty < quantity:
+		frappe.throw(
+			f"Only {available_qty:g} units available in {from_warehouse}, cannot move {quantity:g} units of {item_code}."
+		)
+
+	company = _warehouse_company(from_warehouse)
+	if not company:
+		frappe.throw(f"Could not determine company for warehouse {from_warehouse}.")
+
+	# Create Stock Entry (Material Transfer)
+	transfer = _create_stock_entry(
+		"Material Transfer",
+		[{
+			"item_code": item_code,
+			"qty": quantity,
+			"s_warehouse": from_warehouse,
+			"t_warehouse": to_warehouse,
+		}],
+		company=company,
+	)
+
+	# Create Inventory Action annotation
+	action = frappe.new_doc("Inventory Action")
+	action.item_code = item_code
+	action.warehouse = from_warehouse
+	action.action_type = "Move Stock"
+	action.reason_code = reason_code
+	action.from_warehouse = from_warehouse
+	action.to_warehouse = to_warehouse
+	action.quantity = quantity
+	action.notes = notes
+	action.source_document_type = "Stock Entry"
+	action.source_document_name = transfer.name
+	action.created_by_user = frappe.session.user
+	action.insert()
+
+	return {
+		"name": transfer.name,
+		"item_code": item_code,
+		"from_warehouse": from_warehouse,
+		"to_warehouse": to_warehouse,
+		"quantity_moved": quantity,
+		"action_id": action.name,
+	}
+
+
+@frappe.whitelist()
+def get_bin_activity(item_code: str = None, warehouse: str = None, limit: int = 100) -> list[dict]:
+	"""Return activity feed for an item and/or warehouse.
+
+	Joins Stock Ledger Entries with Inventory Action records to show the complete
+	audit trail with reasons. If both are given, shows per-bin activity. If only
+	item_code given, shows item activity across all bins.
+
+	Returns most recent entries first, limited to `limit` (default 100).
+	"""
+	item_code = (item_code or "").strip()
+	warehouse = (warehouse or "").strip()
+
+	if not item_code and not warehouse:
+		frappe.throw("Provide item_code or warehouse (or both).")
+
+	filters = {"is_cancelled": 0}
+	if item_code:
+		filters["item_code"] = item_code
+	if warehouse:
+		filters["warehouse"] = warehouse
+
+	# Get Stock Ledger Entries
+	sle_rows = frappe.get_all(
+		"Stock Ledger Entry",
+		filters=filters,
+		fields=[
+			"name",
+			"item_code",
+			"warehouse",
+			"actual_qty",
+			"qty_after_transaction",
+			"voucher_type",
+			"voucher_no",
+			"owner",
+			"posting_date",
+			"posting_time",
+		],
+		order_by="posting_date desc, posting_time desc",
+		limit_page_length=limit,
+	)
+
+	# Build a map of Inventory Action records by source document
+	actions_by_source = {}
+	for action in frappe.get_all(
+		"Inventory Action",
+		fields=["name", "reason_code", "notes", "source_document_type", "source_document_name", "created_by_user"],
+	):
+		key = f"{action.source_document_type}:{action.source_document_name}"
+		actions_by_source[key] = action
+
+	# A Stock Reconciliation *sets* a balance rather than moving a delta: it writes
+	# actual_qty = 0 and puts the result in qty_after_transaction. So `after - actual`
+	# is not the previous balance for those rows, and actual_qty is not the change.
+	# Derive the previous balance from the next-older entry for the same item+bin,
+	# which is correct for every voucher type. The oldest row in the window has no
+	# predecessor loaded, so it falls back to the arithmetic.
+	previous_balance: dict[str, float] = {}
+	last_seen: dict[tuple, float] = {}
+	for sle in reversed(sle_rows):  # oldest -> newest
+		key = (sle.item_code, sle.warehouse)
+		previous_balance[sle.name] = last_seen.get(
+			key, flt(sle.qty_after_transaction) - flt(sle.actual_qty)
+		)
+		last_seen[key] = flt(sle.qty_after_transaction)
+
+	# Merge the data
+	activity = []
+	for sle in sle_rows:
+		action_key = f"{sle.voucher_type}:{sle.voucher_no}"
+		action = actions_by_source.get(action_key)
+		prior = previous_balance[sle.name]
+
+		activity.append({
+			"timestamp": f"{sle.posting_date} {sle.posting_time}",
+			"item_code": sle.item_code,
+			"warehouse": sle.warehouse,
+			"quantity_change": flt(sle.qty_after_transaction) - prior,
+			"previous_qty": prior,
+			"new_qty": flt(sle.qty_after_transaction),
+			"user": _user(sle.owner)["name"],
+			"reason": action.reason_code if action else sle.voucher_type,
+			"notes": action.notes if action else "",
+			"source_type": sle.voucher_type,
+			"source_name": sle.voucher_no,
+			"action_id": action.name if action else None,
+			"route": _route(sle.voucher_type, sle.voucher_no) if sle.voucher_no else "",
+		})
+
+	return activity
 
 
 @frappe.whitelist()

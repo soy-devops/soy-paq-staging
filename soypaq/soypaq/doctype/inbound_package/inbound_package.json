@@ -53,7 +53,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "External Tracking Number",
-   "reqd": 1,
+   "reqd": 0,
    "unique": 1
   },
   {
@@ -202,7 +202,7 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Naming Series",
-   "options": "SPQ-.#####",
+   "options": "SPQ-MIA-.#####",
    "read_only": 1
   },
   {
