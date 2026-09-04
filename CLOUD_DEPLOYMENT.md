@@ -68,6 +68,42 @@ fails the build if a real client name shows up in a public file, or if this
 file's stated Frappe version drifts from `pyproject.toml`'s pin. Add new
 client names to its `BANNED_TERMS` list as they're onboarded.
 
+It also runs as a **pre-commit hook**, catching the same problem before it's
+even saved to git history. One-time setup per machine:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+After that, every `git commit` in this repo runs the check automatically. A
+blocked commit prints exactly which file/line is wrong.
+
+## Day-to-Day: Getting a Change from Here to Frappe Cloud
+
+This is the only sequence that actually ships something. Skipping the last
+step is the single most common mistake - a `git push` alone changes nothing
+on the live site.
+
+1. **Commit your change** in this repo (`main` branch for production,
+   `staging` for the staging bench). The pre-commit hook above runs
+   automatically and blocks the commit if it finds a problem.
+2. **Push to GitHub:**
+   ```bash
+   git push origin main       # or: git push origin staging
+   ```
+3. **Go to Frappe Cloud → your bench → the target site → Deploy.** Frappe
+   Cloud does not auto-deploy on push by default - pushing only updates the
+   code sitting on GitHub. You (or a configured auto-deploy rule, if you've
+   set one up in Frappe Cloud's bench settings) must trigger the actual
+   deploy for the site to pick up the new commit.
+4. **Watch the Deploy tab until it shows success**, then spot-check the
+   feature in the browser on that site. A deploy can fail (e.g. a version
+   mismatch, a failed migration) even after the push succeeded - "pushed"
+   and "deployed" are not the same thing.
+
+If you only remember one rule: **GitHub has the code the moment you push;
+Frappe Cloud does not have it until a Deploy finishes successfully.**
+
 For a final go/no-go, install from the public repository into a clean local
 Frappe/ERPNext v16 bench and run:
 
