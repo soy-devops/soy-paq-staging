@@ -6,6 +6,114 @@ The current version is shown in the app under Settings → App version.
 Convention: bump `APP_VERSION` / `APP_BUILD_DATE` in `apps/soypaq/ui/src/App.vue` on every change set that
 reaches a running site (local or prod), and log it here with Backend/Frontend split.
 
+## v0.8.6 - 2026-09-13
+
+**Bypass path now pushes real stock, not a dead end.**
+
+**Backend**
+- `complete_pick(skip_downstream=True)` ("Skip - mark done here" at Mark Order Complete) no
+  longer just stops the chain. It now calls new `_auto_complete_downstream()`, which
+  auto-creates and auto-completes a real Pack Task and Shipment Task and posts the actual
+  stock-out Delivery Note - the same real doctypes and the same real stock movement the manual
+  Pack/Ship screens produce, just done inline instead of requiring an operator to click through
+  them. No Shippo label is purchased for this path (a real paid API call); `tracking_number` is
+  left blank for a human, or a future webhook/API integration, to fill in later. This exists so
+  a bypassed order still leaves behind a complete, real record any future integration can read
+  from or patch, instead of a gap where nothing downstream was ever created.
+
+## v0.8.5 - 2026-09-13
+
+**Live Inventory tab/summary cleanup.**
+
+**Frontend**
+- Live Inventory now defaults to the **Bins** tab instead of Items.
+- The separate On hand/Available stat box is gone; its counts are folded into the Bins/Items/
+  History tab labels instead (e.g. `Bins (6)`), matching the same "count in the chip" pattern
+  already used for Open in My Tasks.
+
+## v0.8.4 - 2026-09-13
+
+**Mark Order Complete now asks before releasing to packing.**
+
+**Backend**
+- `complete_pick` gained a `skip_downstream` param: still requires the pick to be fully
+  picked, but lets the operator end the chain at Pick instead of always auto-releasing to Pack -
+  for sites still running packing/shipping by hand outside the app.
+
+**Frontend**
+- "Mark order complete" now opens a confirmation popup - **Send to Pack** or **Skip - mark
+  done here** - instead of silently always releasing to packing, since packing/shipping isn't
+  handled through the app everywhere yet.
+
+## v0.8.3 - 2026-09-13
+
+**My Tasks: Open count badge, and a real bug where a freshly created task landed on an empty
+screen.**
+
+**Frontend**
+- The **Open** filter chip now shows a live count (e.g. `Open (2)`), matching the badge already
+  shown on the bottom-nav My Tasks icon.
+- Fixed a real bug: creating a task from any of the three creation flows (bin-based pick, qty
+  popup, manual create form) landed on the **Active** tab instead of **Open**, where the new
+  task actually was - looked like an empty screen. Caused by a blanket tab-reset watcher racing
+  the creation flow's own explicit tab assignment and winning because it fired one microtask
+  later. Removed the watcher; each entry point now sets its own default tab explicitly instead.
+
+## v0.8.2 - 2026-09-13
+
+**My Tasks unified onto one list with three equal filters, replacing the Active-default /
+forced-navigation design from v0.8.1.**
+
+**Frontend**
+- My Tasks is now **one continuous task list** filtered by three always-visible, equal chips -
+  **Active / Open / History** - instead of Active being the default screen with Open/History
+  reached via separate buttons and a "Back to Active" link. Releasing or cancelling a task from
+  the drawer no longer forces a tab switch; the row simply disappears from whichever filter no
+  longer matches it.
+- Inventory Activity entries now route to the same task drawer used elsewhere (contents,
+  activity log, etc.) when the underlying record maps to a known task kind, instead of always
+  opening the raw ERPNext Desk record.
+- Live Inventory gained a **History** tab alongside Bins/Items, showing all activity site-wide
+  in one place instead of only per-item.
+
+## v0.8.1 - 2026-09-13
+
+**Follow-up fixes from the first round of production feedback on v0.8.0.**
+
+**Frontend**
+- A successful barcode scan on the Pick screen now also satisfies the "I'm here" per-bin
+  confirmation gate, matching manual +/- entry - previously only the already-blocked manual
+  path attempted this, so a real scan could still be blocked behind a redundant confirmation.
+- Restored the bottom-nav task-icon highlighting, which had regressed.
+
+## v0.8.0 - 2026-09-13
+
+**Production QoL feedback: pick-quantity safety, and My Tasks navigation.**
+
+**Backend**
+- `create_pick_task` now validates requested qty against availability before creating the
+  task - previously a request for more units than physically on hand would create the task
+  anyway and only fail later at pick time. New `_open_pick_reserved_qty()` helper sums
+  `required_qty - picked_qty` across other still-open Pick Tasks for the same item/warehouse,
+  so two in-flight picks can no longer both be told the same units are available. This is a
+  stand-in, not ERPNext's native Stock Reservation Entry - that mechanism only reserves
+  against a Sales Order voucher, and Pick Tasks created here have none yet (see
+  `MEDUSA_INTEGRATION.md`). Swap it out once Medusa order ingestion makes Pick Tasks
+  order-backed.
+
+**Frontend**
+- "Start pick task with this item" (Live Inventory → item detail) no longer hardcodes qty 1 -
+  it now opens a qty-stepper popup first, matching the existing adjust/move-bin popup pattern.
+  Also fixed a latent bug where the screen navigated to Pick even when the create call failed.
+- Live Inventory → Adjust qty now takes the **correct final count** directly instead of a
+  +/- delta - operators read a number off a shelf and type that number. The backend endpoint
+  is still delta-based; the delta is computed client-side against the on-hand qty read when
+  the popup opened.
+- My Tasks now defaults to the **Active** tab on every entry (it doubles as a shared
+  live-progress view other people watch), instead of resetting to Open or silently falling
+  back away from Active when it's empty. Open/History are reached from Active via explicit
+  buttons; a "Back to Active" link returns from either.
+
 ## v0.7.1 - 2026-09-03
 
 **Home screen simplified to a work-launcher + dashboard.**

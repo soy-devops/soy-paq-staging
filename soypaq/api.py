@@ -2054,6 +2054,34 @@ def complete_receipt(package_name: str) -> dict:
 	return {"name": doc.name, "status": doc.status}
 
 
+def _open_pick_reserved_qty(item_code: str, warehouse: str) -> float:
+	"""Sum of qty other open Pick Tasks still intend to take for this item/warehouse.
+
+	Not ERPNext's native `Bin.reserved_qty` - that field is only ever populated by
+	Sales-Order-driven Stock Reservation Entry (erpnext/stock/doctype/stock_reservation_entry),
+	which requires a Sales Order voucher. Pick Tasks created here have no source order
+	(see create_pick_task docstring), so that native mechanism has nothing to attach to
+	until Medusa order ingestion makes Pick Tasks order-backed. This is the interim stand-in -
+	swap it for get_sre_reserved_qty_details_for_voucher once that lands.
+	"""
+	rows = frappe.get_all(
+		"Pick Task Item",
+		filters={
+			"item_code": item_code,
+			"source_warehouse": warehouse,
+			"parenttype": "Pick Task",
+			"parent": [
+				"in",
+				frappe.get_all(
+					"Pick Task", filters={"status": ["not in", ["Completed", "Cancelled"]]}, pluck="name"
+				),
+			],
+		},
+		fields=["required_qty", "picked_qty"],
+	)
+	return sum(max(flt(row.required_qty) - flt(row.picked_qty), 0) for row in rows)
+
+
 @frappe.whitelist()
 def create_pick_task(customer: str = None, warehouse: str = None, items=None) -> dict:
 	"""Create a real, standalone Pick Task for testing when no Sales Order exists yet.
@@ -2067,6 +2095,27 @@ def create_pick_task(customer: str = None, warehouse: str = None, items=None) ->
 	warehouse = warehouse or _zone_warehouse("Storage")
 	if not warehouse:
 		frappe.throw("No warehouse is configured in ERPNext.")
+
+	# Available = on-hand minus what other open Pick Tasks already intend to take -
+	# without this, two pickers (or one picker starting two tasks) could both be told
+	# there's enough stock for the same physical units.
+	requested_in_this_call = {}
+	for row in rows:
+		requested_in_this_call[row["item_code"]] = requested_in_this_call.get(row["item_code"], 0) + flt(
+			row["quantity"]
+		)
+	for item_code, requested_qty in requested_in_this_call.items():
+		on_hand = flt(
+			frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0
+		)
+		already_reserved = _open_pick_reserved_qty(item_code, warehouse)
+		available_qty = on_hand - already_reserved
+		if requested_qty > available_qty:
+			frappe.throw(
+				f"Only {available_qty:g} units of {item_code} available in {warehouse} "
+				f"({on_hand:g} on hand, {already_reserved:g} already committed to other open picks) - "
+				f"cannot pick {requested_qty:g}."
+			)
 
 	if not customer:
 		# DEFAULT_TEST_CUSTOMER is the same sanitized-mirror problem as DEFAULT_COMPANY -
@@ -2269,9 +2318,84 @@ def flag_pick_item(
 	return {"name": doc.name, "item_code": row.item_code, "status": row.status, "exception_reason": reason}
 
 
+def _auto_complete_downstream(pick_task) -> None:
+	"""Bypass path for `skip_downstream`: the operator isn't packing/shipping through the
+	WMS, but the Pack Task / Shipment Task / Delivery Note still need to exist and be
+	real, completed records - not skipped entirely - so (a) stock actually decrements
+	at the real point (Delivery Note) instead of silently never leaving, and (b) a future
+	webhook/API integration (Medusa, etc. - see MEDUSA_INTEGRATION.md) has a completed
+	template it can read fulfilment/tracking data from or patch in later, rather than a
+	gap where no downstream doctype was ever created.
+
+	No Shippo label is purchased here (that's a real paid API call) - tracking_number is
+	left blank for a human or a future integration to fill in.
+	"""
+	_create_pack_task_from_pick(pick_task)
+	pack_names = frappe.get_all(
+		"Pack Task",
+		filters={"warehouse": pick_task.name, "status": ["not in", ["Completed", "Cancelled"]]},
+		pluck="name",
+	)
+	for pack_name in pack_names:
+		pack_task = frappe.get_doc("Pack Task", pack_name)
+		for row in pack_task.get("pick_items") or []:
+			row.packed_qty = flt(row.picked_qty)
+		pack_task.box_confirmed = 1
+		pack_task.status = "Completed"
+		pack_task.current_status = "Packing auto-completed - packing/shipping handled outside SoyPaq"
+		pack_task.completed_by = frappe.session.user
+		pack_task.completed_at = now_datetime()
+		_update_pack_totals(pack_task)
+		pack_task.save(ignore_permissions=True)
+		_publish_task_update(pack_task)
+
+		_create_shipment_task_from_pack(pack_task)
+		shipment_names = frappe.get_all(
+			"Shipment Task",
+			filters={"warehouse": pack_task.name, "status": ["not in", ["Shipped", "Cancelled"]]},
+			pluck="name",
+		)
+		for shipment_name in shipment_names:
+			shipment = frappe.get_doc("Shipment Task", shipment_name)
+			rows = shipment.get("shipment_items") or []
+			ship_items = [
+				{
+					"item_code": row.item_code,
+					"qty": flt(row.packed_qty),
+					"uom": row.get("uom"),
+					"warehouse": row.get("source_bin") or row.get("source_warehouse"),
+				}
+				for row in rows
+				if flt(row.packed_qty) > 0
+			]
+			delivery_note = _create_delivery_note(
+				customer=shipment.customer,
+				items=ship_items,
+				sales_order=shipment.get("sales_order"),
+			)
+			for row in rows:
+				row.shipped_qty = flt(row.packed_qty)
+				row.status = "Shipped"
+			shipment.total_shipped_qty = sum(flt(row.shipped_qty) for row in rows)
+			shipment.status = "Shipped"
+			shipment.current_status = f"Auto-shipped (bypass mode) - Delivery Note {delivery_note.name}"
+			shipment.shipped_by = frappe.session.user
+			shipment.shipped_at = now_datetime()
+			shipment.save(ignore_permissions=True)
+			_publish_task_update(shipment)
+
+
 @frappe.whitelist()
-def complete_pick(task_name: str) -> dict:
-	"""Complete a Pick Task after all quantities are persisted."""
+def complete_pick(task_name: str, skip_downstream: bool = False) -> dict:
+	"""Complete a Pick Task after all quantities are persisted.
+
+	`skip_downstream` is for sites still running Pack/Ship by hand outside SoyPaq
+	(per BUSINESS_CONTEXT.md, the current client is picking-only today). It still pushes the order
+	through real, auto-completed Pack Task / Shipment Task / Delivery Note records
+	(see `_auto_complete_downstream`) instead of stopping the chain - the actual
+	stock-out happens here, at the Delivery Note, exactly as it would through the
+	manual Pack/Ship screens.
+	"""
 	doc = _writable_task("Pick Task", task_name)
 	_update_pick_totals(doc)
 	if flt(doc.total_picked_qty) < flt(doc.total_required_qty):
@@ -2279,12 +2403,19 @@ def complete_pick(task_name: str) -> dict:
 			f"Pick is incomplete: {doc.total_picked_qty:g} of {doc.total_required_qty:g} units picked."
 		)
 	doc.status = "Completed"
-	doc.current_status = "Pick completed and released to packing"
+	doc.current_status = (
+		"Pick completed - packing/shipping handled outside SoyPaq"
+		if skip_downstream
+		else "Pick completed and released to packing"
+	)
 	doc.completed_by = frappe.session.user
 	doc.completed_at = now_datetime()
 	doc.save()
 	_log_pick_action(doc, "Completed", quantity=doc.total_picked_qty)
-	_sync_pack_from_pick(doc)
+	if skip_downstream:
+		_auto_complete_downstream(doc)
+	else:
+		_sync_pack_from_pick(doc)
 	_publish_task_update(doc)
 	return {"name": doc.name, "status": doc.status}
 
@@ -2782,19 +2913,17 @@ def move_bin_stock(
 
 @frappe.whitelist()
 def get_bin_activity(item_code: str = None, warehouse: str = None, limit: int = 100) -> list[dict]:
-	"""Return activity feed for an item and/or warehouse.
+	"""Return activity feed for an item and/or warehouse, or site-wide if neither is given.
 
 	Joins Stock Ledger Entries with Inventory Action records to show the complete
 	audit trail with reasons. If both are given, shows per-bin activity. If only
-	item_code given, shows item activity across all bins.
+	item_code given, shows item activity across all bins. If neither is given,
+	shows the most recent activity across the whole site (Inventory -> History tab).
 
 	Returns most recent entries first, limited to `limit` (default 100).
 	"""
 	item_code = (item_code or "").strip()
 	warehouse = (warehouse or "").strip()
-
-	if not item_code and not warehouse:
-		frappe.throw("Provide item_code or warehouse (or both).")
 
 	filters = {"is_cancelled": 0}
 	if item_code:

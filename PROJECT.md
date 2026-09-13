@@ -520,6 +520,9 @@ doesn't accept short bin codes like `A03`. Worth aligning the two at some point.
    phone/email are still Shippo sandbox values. Not urgent on the sandbox key.
 6. **Real Sales Orders** per incoming order instead of hand-made test data. Unblocks Purchase
    Receipt / Delivery Note as real books; depends on the Customer-granularity decision above.
+   **Now being addressed by the Medusa integration — see `MEDUSA_INTEGRATION.md`.** Medusa is
+   the order source this app has never had; it supplies the outbound side only (inbound stays
+   blind receiving). Planning stage, nothing built.
 7. **Claim timeout** — auto-release a stale claim after inactivity (manual release already works;
    needs a scheduled job).
 8. **Receive claiming** — Inbound Package has no assignment field, so Receive can't show in

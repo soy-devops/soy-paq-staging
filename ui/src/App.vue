@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Alert, Avatar, Badge, Button, FrappeUIProvider, LoadingText, Switch, TextInput, useCall, toast } from 'frappe-ui'
 
 // Bump on every shipped change set - see apps/soypaq/CHANGELOG.md
-const APP_VERSION = '0.7.1'
-const APP_BUILD_DATE = '2026-09-03'
+const APP_VERSION = '0.8.6'
+const APP_BUILD_DATE = '2026-09-13'
 
 const screen = ref('home')
 const history = ref([])
@@ -22,7 +22,9 @@ const myTasksDrawerActivity = ref([])
 const myTasksDrawerItemsLoading = ref(false)
 const myTasksClaimLoading = ref(false)
 const inventoryQuery = ref('')
-const inventoryView = ref('items')
+const inventoryView = ref('staged')
+const globalActivity = ref([])
+const globalActivityLoading = ref(false)
 const inventoryFilter = ref('all')
 const selectedItemCode = ref('')
 const pickScanValue = ref('')
@@ -344,7 +346,12 @@ async function pickApi(method, params, message) {
   }
 }
 function setMyTasksTab(tab) { myTasksTab.value = tab; searchValue.value = '' }
-watch(myTasksActive, (list) => { if (!list.length && myTasksTab.value === 'active') myTasksTab.value = 'open' })
+// Active is the shared live-progress view (what other people are watching), so it's
+// the default filter when deliberately entering My Tasks (bottom nav, a home tile, a
+// scan result) - see the explicit myTasksTab.value assignments at those call sites.
+// It is NOT a blanket watcher on showMyTasksList: a task just created lands in Open,
+// not Active, and a watcher here would stomp that the instant the create flow's own
+// setScreen() call flips showMyTasksList true.
 const MY_TASKS_DOCTYPE = { Pick: 'Pick Task', Pack: 'Pack Task', Ship: 'Shipment Task', Receive: 'Inbound Package' }
 async function fetchApi(method, params) {
   const body = new URLSearchParams()
@@ -444,6 +451,8 @@ async function releaseDrawerTask() {
   const result = await pickApi('release_task', { doctype: MY_TASKS_DOCTYPE[task.kind], name: task.name }, `${task.reference} released back to the queue`)
   if (!result) return
   closeTaskDrawer()
+  // No tab switch: Active/Open/History are equal filters on one list, not separate
+  // screens. The task just drops out of whichever filter no longer matches it.
 }
 async function cancelDrawerTask() {
   const task = myTasksDrawerTask.value
@@ -576,7 +585,7 @@ async function flagReceiveItem(reason) {
 // work happens at item x bin: "adjust this item in A1", never "adjust this item".
 const activeBinAction = ref({ location: null, mode: '' })
 const itemDetailTab = ref('locations')
-const binAdjustDelta = ref('')
+const binAdjustFinal = ref('')
 const binAdjustReason = ref('Count Correction')
 const binMoveQty = ref('')
 const binMoveTarget = ref('')
@@ -586,7 +595,9 @@ const binActionBusy = ref(false)
 
 function openBinAction(location, mode) {
   activeBinAction.value = { location, mode }
-  binAdjustDelta.value = ''
+  // Direct entry, not a delta: operators read the correct count off a shelf and type
+  // that number, not the difference from what the system currently thinks it is.
+  binAdjustFinal.value = String(location.on_hand)
   binAdjustReason.value = 'Count Correction'
   binMoveQty.value = '1'
   binMoveTarget.value = ''
@@ -606,17 +617,44 @@ async function loadBinActivity() {
     binActivityLoading.value = false
   }
 }
+async function loadGlobalActivity() {
+  globalActivityLoading.value = true
+  try {
+    globalActivity.value = (await fetchApi('get_bin_activity', { limit: 100 })) || []
+  } catch (error) {
+    globalActivity.value = []
+  } finally {
+    globalActivityLoading.value = false
+  }
+}
+// An activity entry sourced from a WMS task (Pick/Pack/Ship/Receive) opens the same
+// drawer My Tasks uses - contents, activity, claim state - instead of bouncing to Desk.
+// Anything else (a raw Stock Reconciliation, a Purchase Receipt) has no task drawer to
+// show, so it still falls back to opening the ERPNext record directly.
+const ACTIVITY_SOURCE_TO_KIND = { 'Pick Task': 'Pick', 'Pack Task': 'Pack', 'Shipment Task': 'Ship', 'Inbound Package': 'Receive' }
+function openActivityEntry(entry) {
+  const kind = ACTIVITY_SOURCE_TO_KIND[entry.source_type]
+  if (kind && entry.source_name) {
+    openTaskDrawer({ kind, name: entry.source_name, reference: entry.source_name })
+    return
+  }
+  openDesk(entry.route)
+}
 async function submitBinAdjust(location) {
-  const delta = Number(binAdjustDelta.value)
-  if (!delta) { toast.error('Enter a non-zero adjustment'); return }
+  const final = Number(binAdjustFinal.value)
+  if (binAdjustFinal.value === '' || Number.isNaN(final) || final < 0) { toast.error('Enter the correct quantity'); return }
+  const delta = final - Number(location.on_hand)
+  if (!delta) { toast.error('That matches the current quantity - nothing to adjust'); return }
   binActionBusy.value = true
   try {
+    // adjust_bin_qty is still a delta endpoint - the direct-value entry is purely a UI
+    // convenience, computed against on_hand as read when the popup opened.
     await pickApi('adjust_bin_qty', {
       item_code: selectedInventoryItem.value.item_code,
       warehouse: location.warehouse,
       quantity_delta: delta,
       reason_code: binAdjustReason.value,
-    }, `${selectedInventoryItem.value.item_code} adjusted by ${delta > 0 ? '+' : ''}${delta}`)
+    }, `${selectedInventoryItem.value.item_code} set to ${final}`)
     closeBinAction()
     await loadBinActivity()
   } finally { binActionBusy.value = false }
@@ -656,16 +694,32 @@ async function submitPickFromBin() {
   const result = await pickApi('create_pick_task', { warehouse: bin.name, items: JSON.stringify(items) }, `Pick task created from ${bin.label}`)
   if (!result) return
   closePickFromBin()
+  myTasksTab.value = 'open'
   setScreen('pick')
 }
-async function startPickFromItem() {
+const pickQtyTarget = ref(null)
+const pickQtyValue = ref('1')
+function openPickQty() {
   const item = selectedInventoryItem.value
   if (!item) return
-  const params = { items: JSON.stringify([{ item_code: item.item_code, quantity: 1 }]) }
+  const location = item.locations?.[0] || null
+  pickQtyTarget.value = { item_code: item.item_code, warehouse: location?.warehouse || null, available: location?.available ?? item.available ?? 0 }
+  pickQtyValue.value = String(Math.max(1, Math.min(pickQtyTarget.value.available || 1, 1)))
+}
+function closePickQty() { pickQtyTarget.value = null }
+async function submitPickQty() {
+  const target = pickQtyTarget.value
+  if (!target) return
+  const qty = Number(pickQtyValue.value)
+  if (!qty || qty <= 0) { toast.error('Enter a quantity to pick'); return }
+  const params = { items: JSON.stringify([{ item_code: target.item_code, quantity: qty }]) }
   // Pick from wherever this item actually sits, not an arbitrary default Storage bin -
   // the item detail screen already knows its real bin(s).
-  if (item.locations?.length) params.warehouse = item.locations[0].warehouse
-  await pickApi('create_pick_task', params, `Pick task created for ${item.item_code}`)
+  if (target.warehouse) params.warehouse = target.warehouse
+  const result = await pickApi('create_pick_task', params, `Pick task created for ${target.item_code}`)
+  if (!result) return
+  closePickQty()
+  myTasksTab.value = 'open'
   setScreen('pick')
 }
 watch(selectedItemCode, (code) => {
@@ -713,6 +767,10 @@ async function scanPickItem() {
   }
   selectedPickSku.value = item.sku
   pickActionTag.value = 'scan'
+  // A successful barcode scan is itself proof of physical presence at the bin - no
+  // separate "I'm here" tap should be required after this, same as the manual +/-
+  // buttons intend (pickItem calls this too, it's just unreachable while disabled).
+  confirmBinGroup(item.source_bin || item.source_warehouse || 'No bin assigned')
   await pickApi('pick_item', { task_name: pickTaskName.value, item_code: item.sku, quantity: 1 }, `${item.sku} picked and saved`)
   pickScanValue.value = ''
 }
@@ -827,6 +885,7 @@ async function submitCreateForm() {
   pickMode.value = 'tasks'
   packMode.value = 'tasks'
   shipMode.value = 'tasks'
+  myTasksTab.value = 'open'
   setScreen(createFormType.value)
 }
 function openStageList(kind) {
@@ -834,6 +893,7 @@ function openStageList(kind) {
   pickMode.value = 'tasks'
   packMode.value = 'tasks'
   shipMode.value = 'tasks'
+  myTasksTab.value = 'active'
   setScreen(kind)
 }
 async function openPickActiveOrder(task) {
@@ -902,9 +962,17 @@ async function flagPickItem(reason, handpick = false, note = '', image = '') {
 async function pickAll() {
   await pickApi('pick_all', { task_name: pickTaskName.value }, 'All remaining task quantities saved')
 }
-async function completePick() {
+const pickCompleteConfirmOpen = ref(false)
+function completePick() { pickCompleteConfirmOpen.value = true }
+function closePickCompleteConfirm() { pickCompleteConfirmOpen.value = false }
+async function resolvePickComplete(skipDownstream) {
   pickActionTag.value = 'complete'
-  const result = await pickApi('complete_pick', { task_name: pickTaskName.value }, 'Pick completed and released to packing')
+  const result = await pickApi(
+    'complete_pick',
+    { task_name: pickTaskName.value, skip_downstream: skipDownstream ? 1 : 0 },
+    skipDownstream ? 'Pick completed - not sent to packing' : 'Pick completed and released to packing',
+  )
+  closePickCompleteConfirm()
   if (!result) return
   pickMode.value = 'tasks'
   myTasksTab.value = 'history'
@@ -1012,10 +1080,10 @@ onBeforeUnmount(() => {
               <Button v-if="myTasksScreenKind === 'Receive'" label="Start receiving (scan as you go)" icon-left="lucide-package-plus" variant="solid" theme="green" class="w-full" @click="openStartReceiving" />
               <Button v-if="myTasksScreenKind" :label="MY_TASKS_CREATE_LABEL[myTasksScreenKind]" icon-left="lucide-plus" variant="outline" :theme="myTasksScreenKind === 'Receive' ? 'gray' : 'green'" class="w-full" @click="openCreateForm(myTasksScreenKind.toLowerCase())" />
               <TextInput v-model="searchValue" label="Search tasks" />
-              <div class="grid gap-2" :class="myTasksActive.length ? 'grid-cols-3' : 'grid-cols-2'">
-                <Button label="Open" :variant="myTasksTab === 'open' ? 'solid' : 'outline'" theme="green" @click="setMyTasksTab('open')" />
-                <Button v-if="myTasksActive.length" label="Active" :variant="myTasksTab === 'active' ? 'solid' : 'outline'" theme="green" @click="setMyTasksTab('active')" />
-                <Button label="History" :variant="myTasksTab === 'history' ? 'solid' : 'outline'" theme="gray" @click="setMyTasksTab('history')" />
+              <div class="grid grid-cols-3 gap-2 rounded-4 border border-outline-gray-2 bg-surface-base p-1">
+                <Button :label="myTasksActive.length ? `Active (${myTasksActive.length})` : 'Active'" :variant="myTasksTab === 'active' ? 'solid' : 'ghost'" theme="green" @click="setMyTasksTab('active')" />
+                <Button :label="myTasksOpen.length ? `Open (${myTasksOpen.length})` : 'Open'" :variant="myTasksTab === 'open' ? 'solid' : 'ghost'" theme="gray" @click="setMyTasksTab('open')" />
+                <Button label="History" :variant="myTasksTab === 'history' ? 'solid' : 'ghost'" theme="gray" @click="setMyTasksTab('history')" />
               </div>
               <div v-for="task in myTasksCurrentList" :key="`${task.kind}-${task.name}`" class="rounded-4 border border-outline-gray-2 bg-surface-base p-3 shadow-sm" @click="openTaskDrawer(task)">
                 <div class="flex items-start gap-3">
@@ -1472,7 +1540,7 @@ onBeforeUnmount(() => {
                   <LoadingText v-if="binActivityLoading" text="Loading activity" />
                   <p v-else-if="!binActivity.length" class="py-3 text-center text-xs text-ink-gray-5">No recorded movements for this item yet.</p>
                   <div v-else class="divide-y divide-outline-gray-1 rounded-4 border border-outline-gray-2">
-                    <button v-for="entry in binActivity" :key="entry.source_name + entry.warehouse + entry.timestamp" type="button" class="block w-full p-3 text-left" @click="openDesk(entry.route)">
+                    <button v-for="entry in binActivity" :key="entry.source_name + entry.warehouse + entry.timestamp" type="button" class="block w-full p-3 text-left" @click="openActivityEntry(entry)">
                       <div class="flex items-center justify-between gap-2"><p class="truncate text-xs-semibold">{{ entry.warehouse }}</p><Badge :label="`${entry.quantity_change > 0 ? '+' : ''}${formatQty(entry.quantity_change)}`" :theme="entry.quantity_change < 0 ? 'orange' : 'green'" variant="subtle" /></div>
                       <p class="mt-1 text-2xs text-ink-gray-5">{{ formatQty(entry.previous_qty) }} → {{ formatQty(entry.new_qty) }} · {{ entry.reason }}<template v-if="entry.source_name"> · {{ entry.source_type }} {{ entry.source_name }}</template></p>
                       <p class="mt-1 text-2xs text-ink-gray-4">{{ entry.user }} · {{ entry.timestamp }}</p>
@@ -1481,16 +1549,28 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <Button label="Start pick task with this item" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" @click="startPickFromItem" />
+                <Button label="Start pick task with this item" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" @click="openPickQty" />
                 <Button label="Open item in ERPNext" variant="ghost" theme="gray" class="w-full" @click="openDesk(selectedInventoryItem.route)" />
               </div>
-              <template v-else><div class="grid grid-cols-3 divide-x divide-outline-gray-2 rounded-4 border border-outline-gray-2 py-3 text-center"><div><p class="text-lg-semibold">{{ inventoryView === 'staged' ? inventory.summary.stocked_bin_count : inventory.summary.sku_count }}</p><p class="text-2xs text-ink-gray-5">{{ inventoryView === 'staged' ? 'Stocked bins' : 'SKUs' }}</p></div><div><p class="text-lg-semibold">{{ formatQty(inventoryView === 'staged' ? inventory.summary.staged_on_hand : inventory.summary.on_hand) }}</p><p class="text-2xs text-ink-gray-5">On hand</p></div><div><p class="text-lg-semibold">{{ formatQty(inventory.summary.available) }}</p><p class="text-2xs text-ink-gray-5">Available</p></div></div>
-                <div class="grid grid-cols-2 gap-2 rounded-4 border border-outline-gray-2 bg-surface-base p-1">
-                  <Button label="Bins" :variant="inventoryView === 'staged' ? 'solid' : 'ghost'" theme="green" @click="inventoryView = 'staged'" />
-                  <Button label="Items" :variant="inventoryView !== 'staged' ? 'solid' : 'ghost'" theme="gray" @click="inventoryView = 'items'" />
+              <template v-else>
+                <div class="grid grid-cols-3 gap-2 rounded-4 border border-outline-gray-2 bg-surface-base p-1">
+                  <Button :label="inventory.summary.stocked_bin_count ? `Bins (${inventory.summary.stocked_bin_count})` : 'Bins'" :variant="inventoryView === 'staged' ? 'solid' : 'ghost'" theme="green" @click="inventoryView = 'staged'" />
+                  <Button :label="inventory.summary.sku_count ? `Items (${inventory.summary.sku_count})` : 'Items'" :variant="inventoryView === 'items' ? 'solid' : 'ghost'" theme="gray" @click="inventoryView = 'items'" />
+                  <Button :label="globalActivity.length ? `History (${globalActivity.length})` : 'History'" :variant="inventoryView === 'history' ? 'solid' : 'ghost'" theme="gray" @click="inventoryView = 'history'; loadGlobalActivity()" />
                 </div>
-                <TextInput v-model="inventoryQuery" :label="inventoryView === 'staged' ? 'Search bin or item' : 'Search item, SKU, or location'" />
-                <div v-if="inventoryView === 'staged'" class="space-y-3">
+                <TextInput v-if="inventoryView !== 'history'" v-model="inventoryQuery" :label="inventoryView === 'staged' ? 'Search bin or item' : 'Search item, SKU, or location'" />
+                <div v-if="inventoryView === 'history'" class="space-y-3">
+                  <LoadingText v-if="globalActivityLoading" text="Loading activity" />
+                  <p v-else-if="!globalActivity.length" class="py-8 text-center text-sm text-ink-gray-5">No recorded movements yet.</p>
+                  <div v-else class="divide-y divide-outline-gray-1 rounded-4 border border-outline-gray-2">
+                    <button v-for="entry in globalActivity" :key="entry.source_name + entry.item_code + entry.warehouse + entry.timestamp" type="button" class="block w-full p-3 text-left" @click="openActivityEntry(entry)">
+                      <div class="flex items-center justify-between gap-2"><p class="truncate text-xs-semibold">{{ entry.item_code }} · {{ entry.warehouse }}</p><Badge :label="`${entry.quantity_change > 0 ? '+' : ''}${formatQty(entry.quantity_change)}`" :theme="entry.quantity_change < 0 ? 'orange' : 'green'" variant="subtle" /></div>
+                      <p class="mt-1 text-2xs text-ink-gray-5">{{ formatQty(entry.previous_qty) }} → {{ formatQty(entry.new_qty) }} · {{ entry.reason }}<template v-if="entry.source_name"> · {{ entry.source_type }} {{ entry.source_name }}</template></p>
+                      <p class="mt-1 text-2xs text-ink-gray-4">{{ entry.user }} · {{ entry.timestamp }}</p>
+                    </button>
+                  </div>
+                </div>
+                <div v-else-if="inventoryView === 'staged'" class="space-y-3">
                   <div v-for="bin in stagedBins" :key="bin.name" class="rounded-4 border border-outline-gray-2 bg-surface-base">
                     <div class="flex items-center justify-between gap-2 border-b border-outline-gray-1 px-3 py-2">
                       <div class="flex min-w-0 items-center gap-1.5"><span class="lucide-map-pin size-3.5 shrink-0 text-ink-green-6" aria-hidden="true" /><div class="min-w-0"><p class="truncate text-sm-semibold text-ink-green-7">{{ bin.label }}</p><p class="truncate text-2xs text-ink-gray-5">{{ bin.parent }}</p></div></div>
@@ -1621,11 +1701,11 @@ onBeforeUnmount(() => {
               <p class="text-xs text-ink-gray-5">{{ selectedInventoryItem?.item_name }} · On hand here {{ formatQty(activeBinAction.location.on_hand) }}</p>
               <template v-if="activeBinAction.mode === 'adjust'">
                 <div>
-                  <p class="mb-2 text-center text-2xs text-ink-gray-5">Adjustment (+ adds, - removes)</p>
+                  <p class="mb-2 text-center text-2xs text-ink-gray-5">Correct quantity</p>
                   <div class="flex items-center justify-center gap-3">
-                    <Button icon="lucide-minus" aria-label="Decrease by 1" size="lg" variant="outline" theme="gray" @click="binAdjustDelta = String(Number(binAdjustDelta || 0) - 1)" />
-                    <TextInput v-model="binAdjustDelta" type="number" class="w-24 text-center" />
-                    <Button icon="lucide-plus" aria-label="Increase by 1" size="lg" variant="outline" theme="gray" @click="binAdjustDelta = String(Number(binAdjustDelta || 0) + 1)" />
+                    <Button icon="lucide-minus" aria-label="Decrease by 1" size="lg" variant="outline" theme="gray" @click="binAdjustFinal = String(Math.max(0, Number(binAdjustFinal || 0) - 1))" />
+                    <TextInput v-model="binAdjustFinal" type="number" class="w-24 text-center" />
+                    <Button icon="lucide-plus" aria-label="Increase by 1" size="lg" variant="outline" theme="gray" @click="binAdjustFinal = String(Number(binAdjustFinal || 0) + 1)" />
                   </div>
                 </div>
                 <div>
@@ -1634,7 +1714,7 @@ onBeforeUnmount(() => {
                     <Button v-for="reason in ['Count Correction', 'Damage', 'Physical Recount']" :key="reason" :label="reason" size="sm" :variant="binAdjustReason === reason ? 'solid' : 'ghost'" theme="gray" @click="binAdjustReason = reason" />
                   </div>
                 </div>
-                <p v-if="Number(binAdjustDelta)" class="text-center text-xs text-ink-gray-5">{{ formatQty(activeBinAction.location.on_hand) }} → {{ formatQty(activeBinAction.location.on_hand + Number(binAdjustDelta)) }}</p>
+                <p v-if="binAdjustFinal !== '' && Number(binAdjustFinal) !== Number(activeBinAction.location.on_hand)" class="text-center text-xs text-ink-gray-5">{{ formatQty(activeBinAction.location.on_hand) }} → {{ formatQty(Number(binAdjustFinal)) }}</p>
               </template>
               <template v-else>
                 <div>
@@ -1652,6 +1732,45 @@ onBeforeUnmount(() => {
             <div class="border-t border-outline-gray-2 p-3">
               <Button v-if="activeBinAction.mode === 'adjust'" label="Apply adjustment" variant="solid" theme="green" class="w-full" :loading="binActionBusy" @click="submitBinAdjust(activeBinAction.location)" />
               <Button v-else label="Move stock" variant="solid" theme="green" class="w-full" :loading="binActionBusy" @click="submitBinMove(activeBinAction.location)" />
+            </div>
+          </div>
+        </div>
+
+        <div v-if="pickQtyTarget" class="wms-create-overlay">
+          <div class="wms-create-sheet">
+            <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
+              <p class="text-sm-semibold">Start pick - {{ pickQtyTarget.item_code }}</p>
+              <Button icon="lucide-x" aria-label="Close" variant="ghost" theme="gray" @click="closePickQty" />
+            </div>
+            <div class="space-y-3 overflow-y-auto p-3">
+              <p class="text-xs text-ink-gray-5">{{ formatQty(pickQtyTarget.available) }} available in {{ pickQtyTarget.warehouse || 'this location' }}</p>
+              <div>
+                <p class="mb-2 text-center text-2xs text-ink-gray-5">Quantity to pick</p>
+                <div class="flex items-center justify-center gap-3">
+                  <Button icon="lucide-minus" aria-label="Decrease by 1" size="lg" variant="outline" theme="gray" @click="pickQtyValue = String(Math.max(1, Number(pickQtyValue || 0) - 1))" />
+                  <TextInput v-model="pickQtyValue" type="number" class="w-24 text-center" />
+                  <Button icon="lucide-plus" aria-label="Increase by 1" size="lg" variant="outline" theme="gray" @click="pickQtyValue = String(Number(pickQtyValue || 0) + 1)" />
+                </div>
+              </div>
+            </div>
+            <div class="border-t border-outline-gray-2 p-3">
+              <Button label="Create pick task" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" @click="submitPickQty" />
+            </div>
+          </div>
+        </div>
+
+        <div v-if="pickCompleteConfirmOpen" class="wms-create-overlay">
+          <div class="wms-create-sheet">
+            <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
+              <p class="text-sm-semibold">Send to packing?</p>
+              <Button icon="lucide-x" aria-label="Close" variant="ghost" theme="gray" @click="closePickCompleteConfirm" />
+            </div>
+            <div class="space-y-3 overflow-y-auto p-3">
+              <p class="text-sm text-ink-gray-6">This pick is fully picked. Should it move on to Pack in SoyPaq, or is packing/shipping being handled outside the app for now?</p>
+            </div>
+            <div class="space-y-2 border-t border-outline-gray-2 p-3">
+              <Button label="Send to Pack" variant="solid" theme="green" class="w-full" :loading="pickActionLoading && pickActionTag === 'complete'" @click="resolvePickComplete(false)" />
+              <Button label="Skip - mark done here" variant="outline" theme="gray" class="w-full" :loading="pickActionLoading && pickActionTag === 'complete'" @click="resolvePickComplete(true)" />
             </div>
           </div>
         </div>
@@ -1794,7 +1913,7 @@ onBeforeUnmount(() => {
 
         <nav class="wms-nav fixed bottom-0 left-1/2 z-10 grid w-full max-w-[400px] -translate-x-1/2 grid-cols-4 items-center justify-items-center border-t border-outline-gray-2 bg-surface-base px-4 shadow-lg sm:absolute">
           <Button variant="ghost" theme="gray" icon="lucide-house" aria-label="Home" :class="screen === 'home' ? 'text-ink-green-6' : 'text-ink-gray-7'" @click="goHome" />
-          <div class="relative"><Button variant="ghost" theme="gray" icon="lucide-clipboard-list" aria-label="My tasks" :class="showMyTasksList ? 'text-ink-green-6' : 'text-ink-gray-7'" @click="setScreen('tasks')" /><Badge v-if="openTaskCount" :label="String(openTaskCount)" theme="green" variant="solid" class="pointer-events-none absolute -right-1 -top-1" /></div>
+          <div class="relative"><Button variant="ghost" theme="gray" icon="lucide-clipboard-list" aria-label="My tasks" :class="showMyTasksList ? 'text-ink-green-6' : 'text-ink-gray-7'" @click="myTasksTab = 'active'; setScreen('tasks')" /><Badge v-if="openTaskCount" :label="String(openTaskCount)" theme="green" variant="solid" class="pointer-events-none absolute -right-1 -top-1" /></div>
           <div class="relative"><Button variant="ghost" theme="gray" icon="lucide-warehouse" aria-label="Inventory" :class="screen === 'inventory' ? 'text-ink-green-6' : 'text-ink-gray-7'" @click="setScreen('inventory')" /><Badge v-if="hasNegativeStock" label="!" theme="red" variant="solid" class="pointer-events-none absolute -right-1 -top-1" /></div>
           <Button variant="ghost" theme="gray" icon="lucide-settings" aria-label="Settings" :class="screen === 'settings' ? 'text-ink-green-6' : 'text-ink-gray-7'" @click="setScreen('settings')" />
         </nav>
