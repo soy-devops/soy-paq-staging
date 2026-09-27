@@ -6,7 +6,6 @@ from frappe.model.document import Document
 from frappe.utils import now_datetime
 
 import soypaq
-from soypaq.portal_version import PORTAL_VERSION
 
 
 def _recent_changes(limit: int = 3) -> str:
@@ -23,7 +22,6 @@ class SoyPaqSettings(Document):
 	def onload(self):
 		# Display only; the fields are read-only and never stored.
 		self.app_version = soypaq.__version__
-		self.portal_version = PORTAL_VERSION
 		self.recent_changes = _recent_changes()
 
 	def validate(self):
