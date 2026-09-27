@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Alert, Avatar, Badge, Button, FrappeUIProvider, LoadingText, Switch, TextInput, useCall, toast } from 'frappe-ui'
 
 // Bump on every shipped change set - see apps/soypaq/CHANGELOG.md
-const APP_VERSION = '0.8.6'
-const APP_BUILD_DATE = '2026-09-13'
+const APP_VERSION = '0.11.7'
+const APP_BUILD_DATE = '2026-09-26'
 
 const screen = ref('home')
 const history = ref([])
@@ -22,6 +22,22 @@ const myTasksDrawerActivity = ref([])
 const myTasksDrawerItemsLoading = ref(false)
 const myTasksClaimLoading = ref(false)
 const inventoryQuery = ref('')
+// Inventory filters: Company (tenant that holds the stock), Color, Size. Collapsed by default.
+const traitFilter = ref({ company: '', color: '', size: '' })
+const filtersOpen = ref(false)
+const FILTER_LABELS = { company: 'Company', color: 'Color', size: 'Size' }
+const activeFilterCount = computed(() => Object.values(traitFilter.value).filter(Boolean).length)
+const SIZE_ORDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']
+const traitOptions = computed(() => {
+  const pick = (key) => [...new Set(inventory.value.items.map((item) => item[key]).filter(Boolean))]
+  return {
+    company: pick('company').sort(),
+    color: pick('color').sort(),
+    size: pick('size').sort((a, b) => (SIZE_ORDER.indexOf(a) + 1 || 99) - (SIZE_ORDER.indexOf(b) + 1 || 99)),
+  }
+})
+const itemTraits = (code) => inventory.value.items.find((item) => item.item_code === code) || {}
+const traitMatch = (item) => Object.entries(traitFilter.value).every(([key, value]) => !value || key === 'company' && !item.company || item[key] === value)
 const inventoryView = ref('staged')
 const globalActivity = ref([])
 const globalActivityLoading = ref(false)
@@ -39,12 +55,10 @@ const vibration = ref(true)
 const sound = ref(true)
 const lastDemoSync = ref('Just now')
 const packScanValue = ref('')
-const pickLocationValue = ref('')
 const scannerOpen = ref(false)
 const scannerTarget = ref('sku')
 const scannerStarting = ref(false)
 const pickActionTag = ref('')
-const confirmedBins = ref(new Set())
 const receiveMode = ref('tasks')
 const selectedPackageName = ref('')
 const receiveScanValue = ref('')
@@ -60,6 +74,17 @@ const createWarehouse = ref('')
 const createPackageType = ref('Carton Box')
 const createCarrier = ref('UPS')
 const createItems = ref([{ item_code: '', quantity: 1 }])
+// Scan-first pick builder (Pick screen "New Pick Task"). One line per item; a line's bin decides
+// which Pick Task it lands in (one task per bin, created server-side in a single call).
+const builderOpen = ref(false)
+const builderScan = ref('')
+const builderLines = ref([])
+const builderBin = ref(null)
+const builderEditKey = ref('')
+const builderBusy = ref(false)
+const builderFlashKey = ref('')
+const builderInput = ref(null)
+const builderNames = ref([])
 let scannerHandler = null
 
 const bootstrap = useCall({
@@ -143,7 +168,8 @@ const myTasksDrawerIsDone = computed(() => {
 })
 const filteredInventory = computed(() => inventory.value.items.filter((item) => {
   const query = inventoryQuery.value.trim().toLowerCase()
-  const queryMatch = !query || `${item.item_code} ${item.item_name} ${item.primary_location}`.toLowerCase().includes(query)
+  const queryMatch = !query || `${item.item_code} ${item.item_name} ${item.item_group} ${item.color} ${item.size} ${item.collection} ${item.primary_location}`.toLowerCase().includes(query)
+  if (!traitMatch(item)) return false
   const filterMatch = inventoryFilter.value === 'all'
     || (inventoryFilter.value === 'stock' && item.on_hand > 0)
     || (inventoryFilter.value === 'reserved' && item.reserved > 0)
@@ -169,7 +195,9 @@ const stagedBins = computed(() => {
     if (!query) return true
     return `${bin.name} ${bin.label}`.toLowerCase().includes(query)
       || bin.items.some((i) => `${i.item_code} ${i.item_name}`.toLowerCase().includes(query))
-  })
+  }).filter((bin) => !traitFilter.value.company || bin.company === traitFilter.value.company)
+    .filter((bin) => !traitFilter.value.color && !traitFilter.value.size
+      || bin.items.some((i) => traitMatch({ ...itemTraits(i.item_code), company: '' })))
 })
 const shipTotal = computed(() => data.value.ship.items.reduce((total, item) => total + Number(item.quantity || 0), 0))
 const shipPacked = computed(() => data.value.ship.items.reduce((total, item) => total + Number(item.packed || 0), 0))
@@ -589,6 +617,30 @@ const binAdjustFinal = ref('')
 const binAdjustReason = ref('Count Correction')
 const binMoveQty = ref('')
 const binMoveTarget = ref('')
+// "+ New bin": pick the customer, the code defaults to the next free one (A07 after A06).
+const newBin = ref(null)
+// "Example Company - Storage - A02 - S" to "A02" for compact lines.
+const shortBin = (name) => String(name || '').replace(/^.* - Storage - /, '').replace(/ - [A-Z]+$/, '')
+async function openNewBin(forMove = false) {
+  try {
+    const opts = await wmsCall('new_bin_options', {})
+    if (!opts.customers.length) { toast.error('No customer has a Storage zone to add a bin to'); return }
+    newBin.value = { ...opts, forMove, busy: false }
+  } catch (error) { toast.error(error.message) }
+}
+async function newBinCustomerChanged() {
+  try { newBin.value.code = (await wmsCall('new_bin_options', { customer: newBin.value.customer })).code } catch (error) { toast.error(error.message) }
+}
+async function submitNewBin() {
+  const form = newBin.value
+  form.busy = true
+  try {
+    const result = await pickApi('create_bin', { customer: form.customer, code: form.code }, 'Bin created')
+    if (result === null) return
+    if (form.forMove && result?.code) binMoveTarget.value = result.code
+    newBin.value = null
+  } finally { if (newBin.value) newBin.value.busy = false }
+}
 const binActivity = ref([])
 const binActivityLoading = ref(false)
 const binActionBusy = ref(false)
@@ -677,51 +729,9 @@ async function submitBinMove(location) {
     await loadBinActivity()
   } finally { binActionBusy.value = false }
 }
-const pickFromBinTarget = ref(null)
-const pickFromBinSelections = ref({})
-function openPickFromBin(bin) {
-  pickFromBinTarget.value = bin
-  pickFromBinSelections.value = Object.fromEntries((bin.items || []).map((item) => [item.item_code, { selected: false, quantity: item.on_hand || 1 }]))
-}
-function closePickFromBin() { pickFromBinTarget.value = null }
-async function submitPickFromBin() {
-  const bin = pickFromBinTarget.value
-  if (!bin) return
-  const items = Object.entries(pickFromBinSelections.value)
-    .filter(([, sel]) => sel.selected && Number(sel.quantity) > 0)
-    .map(([item_code, sel]) => ({ item_code, quantity: Number(sel.quantity) }))
-  if (!items.length) { toast.error('Select at least one item'); return }
-  const result = await pickApi('create_pick_task', { warehouse: bin.name, items: JSON.stringify(items) }, `Pick task created from ${bin.label}`)
-  if (!result) return
-  closePickFromBin()
-  myTasksTab.value = 'open'
-  setScreen('pick')
-}
-const pickQtyTarget = ref(null)
-const pickQtyValue = ref('1')
-function openPickQty() {
-  const item = selectedInventoryItem.value
-  if (!item) return
-  const location = item.locations?.[0] || null
-  pickQtyTarget.value = { item_code: item.item_code, warehouse: location?.warehouse || null, available: location?.available ?? item.available ?? 0 }
-  pickQtyValue.value = String(Math.max(1, Math.min(pickQtyTarget.value.available || 1, 1)))
-}
-function closePickQty() { pickQtyTarget.value = null }
-async function submitPickQty() {
-  const target = pickQtyTarget.value
-  if (!target) return
-  const qty = Number(pickQtyValue.value)
-  if (!qty || qty <= 0) { toast.error('Enter a quantity to pick'); return }
-  const params = { items: JSON.stringify([{ item_code: target.item_code, quantity: qty }]) }
-  // Pick from wherever this item actually sits, not an arbitrary default Storage bin -
-  // the item detail screen already knows its real bin(s).
-  if (target.warehouse) params.warehouse = target.warehouse
-  const result = await pickApi('create_pick_task', params, `Pick task created for ${target.item_code}`)
-  if (!result) return
-  closePickQty()
-  myTasksTab.value = 'open'
-  setScreen('pick')
-}
+// "Start pick from this bin" (Inventory > Bins) opens the scan-first pick builder listing that bin's items.
+// The other entry point is New Pick Task on the Pick screen.
+function openPickFromBin(bin) { openPickBuilder({ code: bin.name }) }
 watch(selectedItemCode, (code) => {
   closeBinAction()
   itemDetailTab.value = 'locations'
@@ -742,14 +752,26 @@ function openStageScanner(item) {
 async function completeReceipt() {
   await pickApi('complete_receipt', { package_name: data.value.receive.package.name }, 'Package stored - inventory available in ERPNext')
 }
-async function confirmPickLocation() {
-  await pickApi('confirm_pick_location', { task_name: pickTaskName.value, location_code: pickLocationValue.value || data.value.pick.bin }, `Location ${data.value.pick.bin} confirmed in ERPNext`)
+// Every bin is confirmed on the server: by scanning the bin, scanning an item in it (a scan proves presence),
+// or "I'm here" for tapping. A single-bin task's server gate expects the task's own bin code.
+// Resolves falsy only when the server refused.
+async function confirmBinGroup(bin) {
+  const group = pickBinGroups.value.find((row) => row.bin === bin)
+  if (!group || binIsConfirmed(group)) return true
+  const code = pickBinGroups.value.length > 1 ? bin : (data.value.pick.bin || bin)
+  return pickApi('confirm_pick_location', { task_name: pickTaskName.value, location_code: code }, `Bin ${bin} confirmed`)
 }
-function confirmBinGroup(bin) { confirmedBins.value = new Set(confirmedBins.value).add(bin) }
+const binIsConfirmed = (group) => group.items.every((item) => item.bin_confirmed) || (pickBinGroups.value.length <= 1 && pickLocationConfirmed.value)
+// A scanned/typed bin code: the full name or the short code (A02), as the server accepts.
+function findPickBin(code) {
+  const c = String(code || '').trim().toLowerCase()
+  if (!c) return null
+  return pickBinGroups.value.find((group) => { const bin = group.bin.toLowerCase(); return bin === c || bin.includes(` - ${c} - `) || bin.endsWith(` - ${c}`) }) || null
+}
 async function pickItem(item) {
   selectedPickSku.value = item.sku
   pickActionTag.value = 'row'
-  confirmBinGroup(item.source_bin || item.source_warehouse || 'No bin assigned')
+  if (!(await confirmBinGroup(item.source_bin || item.source_warehouse || 'No bin assigned'))) return
   await pickApi('pick_item', { task_name: pickTaskName.value, item_code: item.sku, quantity: 1 }, `${item.sku} picked and saved`)
 }
 async function unpickItem(item) {
@@ -761,8 +783,10 @@ async function scanPickItem() {
   const code = pickScanValue.value.trim()
   const item = pickRows.value.find((row) => row.sku === code)
   if (!item) {
+    const binGroup = findPickBin(code)
+    if (binGroup) { pickScanValue.value = ''; await confirmBinGroup(binGroup.bin); return }
     pickIssueReason.value = 'Wrong Item'
-    toast.error(`Item ${code || 'barcode'} is not on this pick task`)
+    toast.error(`${code || 'That barcode'} is not an item or bin on this pick task`)
     return
   }
   selectedPickSku.value = item.sku
@@ -770,7 +794,7 @@ async function scanPickItem() {
   // A successful barcode scan is itself proof of physical presence at the bin - no
   // separate "I'm here" tap should be required after this, same as the manual +/-
   // buttons intend (pickItem calls this too, it's just unreachable while disabled).
-  confirmBinGroup(item.source_bin || item.source_warehouse || 'No bin assigned')
+  if (!(await confirmBinGroup(item.source_bin || item.source_warehouse || 'No bin assigned'))) return
   await pickApi('pick_item', { task_name: pickTaskName.value, item_code: item.sku, quantity: 1 }, `${item.sku} picked and saved`)
   pickScanValue.value = ''
 }
@@ -810,11 +834,7 @@ async function openScanner(target) {
 function onScanDecoded(decodedText) {
   const code = (decodedText || '').trim()
   if (!code) return
-  if (scannerTarget.value === 'location') {
-    pickLocationValue.value = code
-    closeScanner()
-    confirmPickLocation()
-  } else if (scannerTarget.value === 'receive-sku') {
+  if (scannerTarget.value === 'receive-sku') {
     closeScanner()
     receiveScanValue.value = code
     scanReceiveItem()
@@ -822,6 +842,9 @@ function onScanDecoded(decodedText) {
     closeScanner()
     packScanValue.value = code
     scanPackItem()
+  } else if (scannerTarget.value === 'builder') {
+    closeScanner()
+    builderScanSubmit(code)
   } else if (scannerTarget.value === 'stage-bin') {
     closeScanner()
     const item = data.value.receive.package.items.find((row) => row.sku === stagingTargetSku.value)
@@ -840,7 +863,152 @@ function closeScanner() {
     handler.stop().then(() => handler.clear()).catch(() => {})
   }
 }
+// Light call for lookups: no bootstrap reload and not gated by pickApiBusy, so scanning stays instant.
+async function wmsCall(method, params) {
+  const body = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => body.append(key, value ?? ''))
+  const csrfToken = window.csrf_token !== '{{ csrf_token }}' ? window.csrf_token : null
+  const response = await window.fetch(`/api/method/soypaq.api.${method}`, {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+      ...(csrfToken ? { 'X-Frappe-CSRF-Token': csrfToken } : {}),
+    },
+    body: body.toString(),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok || payload.exc) throw new Error(extractErrorMessage(payload, response.statusText || 'Lookup failed'))
+  return payload.message
+}
+function scanFeedback(ok) {
+  if (vibration.value && navigator.vibrate) navigator.vibrate(ok ? 40 : [80, 60, 80])
+  if (!sound.value) return
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)()
+    const osc = ctx.createOscillator()
+    osc.frequency.value = ok ? 880 : 220
+    osc.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + (ok ? 0.08 : 0.25))
+    osc.onended = () => ctx.close()
+  } catch { /* feedback is optional */ }
+}
+function focusBuilderInput() {
+  requestAnimationFrame(() => builderInput.value?.$el?.querySelector('input')?.focus({ preventScroll: true }))
+}
+function openPickBuilder(seed) {
+  builderLines.value = []
+  builderBin.value = null
+  builderScan.value = ''
+  builderEditKey.value = ''
+  builderOpen.value = true
+  focusBuilderInput()
+  wmsCall('preview_pick_task_names', { count: 8 }).then((names) => { builderNames.value = names || [] }).catch(() => { builderNames.value = [] })
+  if (seed?.code) builderScanSubmit(seed.code)
+}
+function closePickBuilder() { builderOpen.value = false; builderEditKey.value = '' }
+const builderLoc = (line) => line.locations.find((loc) => loc.warehouse === line.warehouse) || null
+const builderAvailable = (line) => builderLoc(line)?.available ?? 0
+const builderOver = (line) => Number(line.quantity) > builderAvailable(line)
+const builderGroups = computed(() => {
+  const groups = new Map()
+  for (const line of builderLines.value) {
+    if (!groups.has(line.warehouse)) groups.set(line.warehouse, { warehouse: line.warehouse, label: builderLoc(line)?.label || line.warehouse, lines: [] })
+    groups.get(line.warehouse).lines.push(line)
+  }
+  return [...groups.values()]
+})
+// A preview of the naming series (the real name is assigned on create). One task covers every bin.
+const builderTaskName = computed(() => builderNames.value[0] || 'New pick task')
+const builderUnits = computed(() => builderLines.value.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0))
+const builderCanCreate = computed(() => builderLines.value.length > 0 && builderLines.value.every((line) => Number(line.quantity) > 0 && !builderOver(line)))
+const builderEditLine = computed(() => builderLines.value.find((line) => line.item_code === builderEditKey.value) || null)
+function addBuilderItem(res) {
+  const existing = builderLines.value.find((line) => line.item_code === res.item_code)
+  if (existing) {
+    if (Number(existing.quantity) + 1 > builderAvailable(existing)) { scanFeedback(false); toast.error(`No more ${existing.item_name} left in ${builderLoc(existing)?.label || existing.warehouse}`); return }
+    existing.quantity = Number(existing.quantity) + 1
+  } else {
+    if (!res.locations.length) { scanFeedback(false); toast.error(`${res.item_name} has no stock in any bin`); return }
+    const best = res.locations.find((loc) => loc.warehouse === res.default_warehouse)
+    if (!best || best.available < 1) { scanFeedback(false); toast.error(`${res.item_name} has none left to pick`); return }
+    // Keep going in the bin the sheet is already using (scanned bin, else the last line's): the server
+    // returns default_warehouse for that hint, else the bin with the most available.
+    builderLines.value.unshift({ item_code: res.item_code, item_name: res.item_name, image: res.image, uom: res.uom, locations: res.locations, warehouse: res.default_warehouse, quantity: 1 })
+  }
+  builderFlashKey.value = res.item_code
+  scanFeedback(true)
+}
+async function builderScanSubmit(raw) {
+  const code = String(raw ?? builderScan.value).trim()
+  builderScan.value = ''
+  focusBuilderInput()
+  if (!code || builderBusy.value) return
+  // Fast path: the code is already a line's item code, so a repeat scan needs no round trip.
+  if (builderLines.value.some((line) => line.item_code === code)) { addBuilderItem({ item_code: code }); return }
+  builderBusy.value = true
+  try {
+    const hint = builderBin.value?.warehouse || builderLines.value[0]?.warehouse || ''
+    const res = await wmsCall('resolve_scan', { code, warehouse: hint })
+    if (!res.resolved) { scanFeedback(false); toast.error(`No item or bin found for ${code}`); return }
+    if (res.kind === 'bin') { builderBin.value = res; scanFeedback(true); return }
+    addBuilderItem(res)
+  } catch (error) {
+    scanFeedback(false)
+    toast.error(error.message || 'Lookup failed')
+  } finally {
+    builderBusy.value = false
+    focusBuilderInput()
+  }
+}
+// In the scanned bin's list an item reads "N available" until it is in the sheet from that bin, then "N left".
+const builderBinLine = (item) => builderLines.value.find((row) => row.item_code === item.item_code && row.warehouse === builderBin.value?.warehouse)
+const builderBinLeft = (item) => Math.max(0, item.available - Number(builderBinLine(item)?.quantity || 0))
+function builderBinCount(item) {
+  return builderBinLine(item) ? `${formatQty(builderBinLeft(item))} left` : `${formatQty(item.available)} available`
+}
+// Pick everything available in the listed bin: each item at its available quantity.
+async function addAllFromBuilderBin() {
+  const bin = builderBin.value
+  if (!bin) return
+  for (const item of bin.items) {
+    if (item.available <= 0) continue
+    await builderScanSubmit(item.item_code)
+    const line = builderLines.value.find((row) => row.item_code === item.item_code)
+    if (line && line.warehouse === bin.warehouse) line.quantity = item.available
+  }
+}
+// Never above what is available in the line's bin (and never below 1; use Remove to drop a line).
+function setBuilderQty(line, qty) { line.quantity = Math.min(Math.max(1, Number(qty) || 1), Math.max(1, builderAvailable(line))) }
+function changeBuilderBin(line, loc) {
+  if (loc.available < 1) return
+  line.warehouse = loc.warehouse
+  setBuilderQty(line, line.quantity)
+}
+function removeBuilderLine(line) {
+  builderLines.value = builderLines.value.filter((row) => row !== line)
+  builderEditKey.value = ''
+}
+async function submitPickBuilder() {
+  if (!builderCanCreate.value) return
+  const items = builderLines.value.map((line) => ({ item_code: line.item_code, quantity: Number(line.quantity), warehouse: line.warehouse }))
+  pickActionTag.value = 'create'
+  const result = await pickApi('create_pick_task', { items: JSON.stringify(items) }, '')
+  if (!result) return
+  toast.success(`${result.name} created`)
+  closePickBuilder()
+  receiveMode.value = 'tasks'
+  pickMode.value = 'tasks'
+  packMode.value = 'tasks'
+  shipMode.value = 'tasks'
+  myTasksTab.value = 'open'
+  setScreen('pick')
+}
 function openCreateForm(type) {
+  if (type === 'pick') { openPickBuilder(); return }
   createFormType.value = type
   createCustomer.value = ''
   createWarehouse.value = ''
@@ -898,8 +1066,6 @@ function openStageList(kind) {
 }
 async function openPickActiveOrder(task) {
   selectedPickTaskName.value = task.name
-  confirmedBins.value = new Set()
-  pickLocationValue.value = ''
   await bootstrap.reload()
   pickMode.value = 'active'
   selectedPickSku.value = ''
@@ -1256,34 +1422,16 @@ onBeforeUnmount(() => {
                   <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs text-ink-gray-5">
                     <span class="truncate">Picker: {{ pickContext.assigned_to?.name || data.operator.name }}</span>
                     <span v-if="pickContext.created" class="truncate">Created: {{ formatDateTime(pickContext.created) }}</span>
-                    <span v-if="pickContext.external_reference" class="truncate">PO: {{ pickContext.external_reference }}</span>
+                    <span v-if="pickContext.external_reference" class="truncate">{{ pickContext.reference_label || 'PO' }}: {{ pickContext.external_reference }}</span>
                     <span v-if="pickContext.transaction_date" class="truncate">Ordered: {{ pickContext.transaction_date }}</span>
                   </div>
                   <Badge v-if="pickContext.source_integrity?.status === 'mismatch'" :label="pickContext.source_integrity.label" theme="orange" variant="subtle" class="mt-2" />
                 </div>
-                <div v-if="!pickLocationConfirmed" class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
-                  <p class="text-sm-semibold text-ink-green-7">Scan location first</p>
-                  <p class="mt-1 text-xl-semibold text-ink-green-7">{{ data.pick.bin || 'STAGE-01' }}</p>
-                  <div class="mt-3 flex items-end gap-2">
-                    <TextInput v-model="pickLocationValue" label="Bin code (scan or type)" class="flex-1" @keyup.enter="confirmPickLocation" />
-                    <Button icon="lucide-scan-line" aria-label="Scan location barcode" variant="outline" theme="green" @click="openScanner('location')" />
-                  </div>
-                  <Button label="Confirm location" variant="solid" theme="green" class="mt-3 w-full" :loading="confirmPickLocationRequest.loading" @click="confirmPickLocation" />
-                </div>
-                <div v-if="!pickLocationConfirmed && pickRows.length" class="rounded-4 border border-outline-gray-2 bg-surface-base">
-                  <p class="border-b border-outline-gray-1 px-3 py-2 text-2xs-semibold text-ink-gray-5">Contents</p>
-                  <div v-for="item in pickRows" :key="item.sku" class="flex items-center gap-2 border-b border-outline-gray-1 p-2 last:border-0">
-                    <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
-                    <div class="min-w-0 flex-1"><p class="truncate text-sm-semibold">{{ item.name }}</p><p class="truncate text-2xs text-ink-gray-5">{{ item.sku }}</p></div>
-                    <p class="shrink-0 text-sm-semibold">×{{ formatQty(item.quantity) }}</p>
-                  </div>
-                </div>
-                <template v-else>
                   <div class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
                     <p class="text-sm-semibold text-ink-green-7">Scan or Enter SKU</p>
                     <div class="mt-3 flex items-end gap-2">
-                      <TextInput v-model="pickScanValue" label="Scan barcode or enter SKU" class="flex-1" @keyup.enter="scanPickItem" />
-                      <Button icon="lucide-scan-line" aria-label="Scan item barcode" variant="outline" theme="green" @click="openScanner('sku')" />
+                      <TextInput v-model="pickScanValue" label="Scan item or bin barcode" class="flex-1" @keyup.enter="scanPickItem" />
+                      <Button icon="lucide-scan-line" aria-label="Scan item or bin barcode" variant="outline" theme="green" @click="openScanner('sku')" />
                     </div>
                     <div class="mt-3 grid grid-cols-2 gap-2">
                       <Button label="Confirm scan" variant="solid" theme="green" :loading="pickActionLoading && pickActionTag === 'scan'" :disabled="pickMutationLoading" @click="scanPickItem" />
@@ -1300,7 +1448,7 @@ onBeforeUnmount(() => {
                     <div v-for="group in pickBinGroups" :key="group.bin" class="border-b border-outline-gray-1 last:border-0">
                       <div class="flex items-center justify-between gap-2 bg-surface-gray-1 px-3 py-2">
                         <div class="flex min-w-0 items-center gap-1.5 text-xs-semibold text-ink-green-7"><span class="lucide-map-pin size-3.5 shrink-0" aria-hidden="true" /><span class="truncate">{{ group.bin }}</span></div>
-                        <Button v-if="!confirmedBins.has(group.bin)" label="I'm here" size="sm" variant="solid" theme="green" @click="confirmBinGroup(group.bin)" />
+                        <Button v-if="!binIsConfirmed(group)" label="I'm here" size="sm" variant="solid" theme="green" @click="confirmBinGroup(group.bin)" />
                         <Badge v-else label="Confirmed" theme="green" variant="subtle" />
                       </div>
                       <div
@@ -1322,14 +1470,13 @@ onBeforeUnmount(() => {
                           </div>
                         </div>
                         <div class="flex items-center gap-1" @click.stop>
-                          <Button label="-" variant="outline" theme="gray" size="sm" class="!min-w-8" :loading="pickActionLoading && selectedPickSku === item.sku" :disabled="item.picked <= 0 || pickMutationLoading || !confirmedBins.has(group.bin)" @click="unpickItem(item)" />
+                          <Button label="-" variant="outline" theme="gray" size="sm" class="!min-w-8" :loading="pickActionLoading && selectedPickSku === item.sku" :disabled="item.picked <= 0 || pickMutationLoading || !binIsConfirmed(group)" @click="unpickItem(item)" />
                           <p class="min-w-12 text-center text-sm-semibold">{{ item.picked }} / {{ item.quantity }}</p>
-                          <Button label="+" variant="outline" theme="green" size="sm" class="!min-w-8" :loading="pickActionLoading && selectedPickSku === item.sku" :disabled="item.disabled || item.picked >= item.quantity || pickMutationLoading || !confirmedBins.has(group.bin)" @click="pickItem(item)" />
+                          <Button label="+" variant="outline" theme="green" size="sm" class="!min-w-8" :loading="pickActionLoading && selectedPickSku === item.sku" :disabled="item.disabled || item.picked >= item.quantity || pickMutationLoading || !binIsConfirmed(group)" @click="pickItem(item)" />
                         </div>
                       </div>
                     </div>
                   </div>
-                </template>
                 <div class="rounded-4 border border-outline-gray-2 bg-surface-base p-3">
                   <div class="flex items-center justify-between">
                     <p class="text-sm-semibold">Overall progress</p>
@@ -1549,7 +1696,6 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <Button label="Start pick task with this item" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" @click="openPickQty" />
                 <Button label="Open item in ERPNext" variant="ghost" theme="gray" class="w-full" @click="openDesk(selectedInventoryItem.route)" />
               </div>
               <template v-else>
@@ -1559,6 +1705,19 @@ onBeforeUnmount(() => {
                   <Button :label="globalActivity.length ? `History (${globalActivity.length})` : 'History'" :variant="inventoryView === 'history' ? 'solid' : 'ghost'" theme="gray" @click="inventoryView = 'history'; loadGlobalActivity()" />
                 </div>
                 <TextInput v-if="inventoryView !== 'history'" v-model="inventoryQuery" :label="inventoryView === 'staged' ? 'Search bin or item' : 'Search item, SKU, or location'" />
+                <div v-if="inventoryView !== 'history' && (traitOptions.company.length || traitOptions.color.length || traitOptions.size.length)" class="space-y-2">
+                  <button type="button" class="flex w-full items-center justify-between rounded-4 border border-outline-gray-2 bg-surface-base px-3 py-1.5 text-xs" :aria-expanded="filtersOpen" @click="filtersOpen = !filtersOpen">
+                    <span class="flex items-center gap-1.5"><span class="lucide-sliders-horizontal size-3.5 text-ink-gray-5" aria-hidden="true" />Filters<Badge v-if="activeFilterCount" :label="String(activeFilterCount)" theme="green" variant="subtle" /></span>
+                    <span :class="filtersOpen ? 'lucide-chevron-up' : 'lucide-chevron-down'" class="size-4 text-ink-gray-4" aria-hidden="true" />
+                  </button>
+                  <div v-if="filtersOpen" class="grid grid-cols-3 gap-2">
+                    <select v-for="key in ['company', 'color', 'size']" :key="key" v-model="traitFilter[key]" class="min-w-0 rounded-4 border border-outline-gray-2 bg-surface-base p-1.5 text-xs" :aria-label="`Filter by ${FILTER_LABELS[key].toLowerCase()}`">
+                      <option value="">{{ FILTER_LABELS[key] }}</option>
+                      <option v-for="value in traitOptions[key]" :key="value" :value="value">{{ value }}</option>
+                    </select>
+                  </div>
+                </div>
+                <Button v-if="inventoryView === 'staged'" label="+ New bin" variant="outline" theme="green" class="w-full" @click="openNewBin(false)" />
                 <div v-if="inventoryView === 'history'" class="space-y-3">
                   <LoadingText v-if="globalActivityLoading" text="Loading activity" />
                   <p v-else-if="!globalActivity.length" class="py-8 text-center text-sm text-ink-gray-5">No recorded movements yet.</p>
@@ -1726,6 +1885,7 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <TextInput v-model="binMoveTarget" label="Destination bin" placeholder="Scan or type e.g. A2" />
+                <Button label="+ New bin" variant="ghost" theme="green" size="sm" @click="openNewBin(true)" />
                 <p v-if="binMoveTarget" class="text-xs text-ink-gray-5">{{ activeBinAction.location.warehouse }} → {{ binMoveTarget }}</p>
               </template>
             </div>
@@ -1736,25 +1896,28 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="pickQtyTarget" class="wms-create-overlay">
+        <div v-if="newBin" class="wms-create-overlay wms-fixed">
           <div class="wms-create-sheet">
             <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
-              <p class="text-sm-semibold">Start pick - {{ pickQtyTarget.item_code }}</p>
-              <Button icon="lucide-x" aria-label="Close" variant="ghost" theme="gray" @click="closePickQty" />
+              <p class="text-sm-semibold">New bin</p>
+              <Button icon="lucide-x" aria-label="Close" variant="ghost" theme="gray" @click="newBin = null" />
             </div>
             <div class="space-y-3 overflow-y-auto p-3">
-              <p class="text-xs text-ink-gray-5">{{ formatQty(pickQtyTarget.available) }} available in {{ pickQtyTarget.warehouse || 'this location' }}</p>
-              <div>
-                <p class="mb-2 text-center text-2xs text-ink-gray-5">Quantity to pick</p>
-                <div class="flex items-center justify-center gap-3">
-                  <Button icon="lucide-minus" aria-label="Decrease by 1" size="lg" variant="outline" theme="gray" @click="pickQtyValue = String(Math.max(1, Number(pickQtyValue || 0) - 1))" />
-                  <TextInput v-model="pickQtyValue" type="number" class="w-24 text-center" />
-                  <Button icon="lucide-plus" aria-label="Increase by 1" size="lg" variant="outline" theme="gray" @click="pickQtyValue = String(Number(pickQtyValue || 0) + 1)" />
-                </div>
+              <label class="block">
+                <span class="mb-1 block text-2xs text-ink-gray-5">Customer</span>
+                <select v-model="newBin.customer" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" @change="newBinCustomerChanged">
+                  <option v-for="name in newBin.customers" :key="name" :value="name">{{ name }}</option>
+                </select>
+              </label>
+              <div class="rounded-4 border border-outline-gray-2 bg-surface-gray-1 p-2 text-xs text-ink-gray-5">
+                Customer not listed? A customer needs a Company and a Storage zone before it can hold bins.
+                <Button label="+ New customer" variant="ghost" theme="green" size="sm" class="mt-1" @click="openDesk('/desk/customer/new')" />
               </div>
+              <TextInput v-model="newBin.code" label="Bin code" placeholder="A07" />
+              <p class="text-xs text-ink-gray-5">Default is the next free code for this customer. Edit to use another letter or number.</p>
             </div>
             <div class="border-t border-outline-gray-2 p-3">
-              <Button label="Create pick task" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" @click="submitPickQty" />
+              <Button label="Create bin" variant="solid" theme="green" class="w-full" :loading="newBin.busy" @click="submitNewBin" />
             </div>
           </div>
         </div>
@@ -1775,31 +1938,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="pickFromBinTarget" class="wms-create-overlay">
-          <div class="wms-create-sheet">
-            <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
-              <p class="text-sm-semibold">Start pick from {{ pickFromBinTarget.label }}</p>
-              <Button icon="lucide-x" aria-label="Close" variant="ghost" theme="gray" @click="closePickFromBin" />
-            </div>
-            <div class="space-y-2 overflow-y-auto p-3">
-              <p class="text-xs text-ink-gray-5">Select what to include - quantity defaults to what's on hand here.</p>
-              <div v-for="item in (pickFromBinTarget.items || [])" :key="item.item_code" class="flex items-center gap-2 rounded-4 border border-outline-gray-2 p-2">
-                <input type="checkbox" class="size-4 shrink-0" v-model="pickFromBinSelections[item.item_code].selected" />
-                <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.item_name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
-                <div class="min-w-0 flex-1"><p class="truncate text-sm-semibold">{{ item.item_name }}</p><p class="truncate text-2xs text-ink-gray-5">{{ item.item_code }} · {{ formatQty(item.on_hand) }} on hand</p></div>
-                <TextInput v-model="pickFromBinSelections[item.item_code].quantity" type="number" class="w-16 shrink-0 text-center" :disabled="!pickFromBinSelections[item.item_code].selected" />
-              </div>
-              <p v-if="!(pickFromBinTarget.items || []).length" class="py-6 text-center text-xs text-ink-gray-5">This bin has no items.</p>
-            </div>
-            <div class="border-t border-outline-gray-2 p-3">
-              <Button label="Create pick task" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" @click="submitPickFromBin" />
-            </div>
-          </div>
-        </div>
-
         <div v-if="scannerOpen" class="wms-scanner-overlay">
           <div class="wms-scanner-header">
-            <p class="text-sm-semibold text-ink-gray-1">{{ { location: 'Scan location barcode', 'receive-sku': 'Scan item barcode', 'pack-sku': 'Scan item barcode', 'stage-bin': 'Scan bin barcode' }[scannerTarget] || 'Scan item barcode' }}</p>
+            <p class="text-sm-semibold text-ink-gray-1">{{ { location: 'Scan location barcode', 'receive-sku': 'Scan item barcode', 'pack-sku': 'Scan item barcode', 'stage-bin': 'Scan bin barcode', builder: 'Scan item or bin barcode' }[scannerTarget] || 'Scan item barcode' }}</p>
             <Button icon="lucide-x" aria-label="Close scanner" variant="ghost" theme="gray" class="text-ink-gray-1" @click="closeScanner" />
           </div>
           <div id="wms-scanner-area" class="wms-scanner-area"></div>
@@ -1833,7 +1974,7 @@ onBeforeUnmount(() => {
                 <template v-else>
                   <button v-if="myTasksDrawerSource" type="button" class="mb-2 block w-full rounded-4 border border-outline-gray-2 p-2 text-left" @click="openDesk(myTasksDrawerSource.route)">
                     <div class="flex items-center justify-between gap-2"><p class="text-xs-semibold text-ink-green-6 underline">{{ myTasksDrawerSource.doctype }} {{ myTasksDrawerSource.name }}</p><Badge v-if="myTasksDrawerIntegrity" :label="myTasksDrawerIntegrity.label" :theme="myTasksDrawerIntegrity.status === 'match' ? 'green' : 'orange'" variant="subtle" /></div>
-                    <p class="mt-0.5 text-2xs text-ink-gray-5">{{ myTasksDrawerSource.party_name }}<template v-if="myTasksDrawerSource.external_reference"> · PO {{ myTasksDrawerSource.external_reference }}</template><template v-if="myTasksDrawerSource.transaction_date"> · Ordered {{ myTasksDrawerSource.transaction_date }}</template></p>
+                    <p class="mt-0.5 text-2xs text-ink-gray-5">{{ myTasksDrawerSource.party_name }}<template v-if="myTasksDrawerSource.external_reference"> · {{ myTasksDrawerSource.reference_label || 'PO' }} {{ myTasksDrawerSource.external_reference }}</template><template v-if="myTasksDrawerSource.transaction_date"> · Ordered {{ myTasksDrawerSource.transaction_date }}</template></p>
                   </button>
                   <p v-else class="mb-2 text-2xs text-ink-gray-5">Manually created - no source order linked.</p>
                   <div class="rounded-4 border border-outline-gray-2">
@@ -1841,7 +1982,7 @@ onBeforeUnmount(() => {
                       <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
                       <div class="min-w-0 flex-1">
                         <div class="flex items-center gap-1.5"><p class="truncate text-sm-semibold">{{ item.name }}</p><Badge v-if="item.exception_reason" :label="item.exception_reason" theme="red" variant="subtle" /></div>
-                        <p class="truncate text-2xs text-ink-gray-5">{{ item.sku }}</p>
+                        <p class="truncate text-2xs text-ink-gray-5">{{ item.sku }}<template v-if="item.source_bin"> · Bin {{ shortBin(item.source_bin) }}</template></p>
                       </div>
                       <p class="shrink-0 text-sm-semibold">×{{ formatQty(item.quantity) }}</p>
                     </div>
@@ -1873,6 +2014,92 @@ onBeforeUnmount(() => {
                 <Button v-if="myTasksClaimedByMe" label="Release back to queue" variant="ghost" theme="red" class="w-full" :loading="myTasksClaimLoading || pickActionLoading" @click="releaseDrawerTask" />
                 <Button v-if="myTasksDrawerTask.kind !== 'Receive' && !myTasksClaimedByOther" label="Cancel task" variant="ghost" theme="red" class="w-full" :loading="myTasksClaimLoading || pickActionLoading" @click="cancelDrawerTask" />
               </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="builderOpen" class="wms-create-overlay wms-fixed">
+          <div class="wms-create-sheet">
+            <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
+              <p class="text-sm-semibold">New Pick Task <span class="text-2xs font-normal text-ink-gray-5">(no source order needed)</span></p>
+              <Button icon="lucide-x" aria-label="Cancel" variant="ghost" theme="gray" @click="closePickBuilder" />
+            </div>
+            <div class="space-y-3 overflow-y-auto p-3">
+              <p v-if="!builderLines.length" class="py-6 text-center text-xs text-ink-gray-5">Nothing added yet. Scan an item below to start.</p>
+              <div v-if="builderLines.length" class="rounded-4 border border-outline-gray-2 bg-surface-base">
+                <div class="flex items-center justify-between gap-2 px-3 py-2"><span class="truncate text-xs-semibold text-ink-green-7">{{ builderTaskName }}</span><span class="shrink-0 text-2xs text-ink-gray-5">{{ builderGroups.length }} bin{{ builderGroups.length > 1 ? 's' : '' }}</span></div>
+              <div v-for="group in builderGroups" :key="group.warehouse">
+                <div class="flex items-center gap-1.5 border-t border-outline-gray-1 bg-surface-gray-1 px-3 py-1.5 text-2xs-semibold text-ink-gray-6"><span class="lucide-map-pin size-3 shrink-0" aria-hidden="true" /><span class="truncate">{{ group.label }}</span></div>
+                <div v-for="line in group.lines" :key="line.item_code" class="flex items-center gap-2 border-t border-outline-gray-1 p-2" :class="builderFlashKey === line.item_code ? 'bg-surface-green-1' : ''">
+                  <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left" @click="builderEditKey = line.item_code">
+                    <div class="wms-item-thumb shrink-0"><img v-if="line.image" :src="line.image" :alt="line.item_name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
+                    <div class="min-w-0"><p class="truncate text-sm-semibold">{{ line.item_name }}</p><p class="truncate text-2xs" :class="builderOver(line) ? 'text-ink-red-5' : 'text-ink-gray-5'">{{ line.item_code }}<template v-if="builderOver(line)"> - only {{ formatQty(builderAvailable(line)) }} available</template></p></div>
+                  </button>
+                  <div class="flex shrink-0 items-center gap-1">
+                    <Button icon="lucide-minus" aria-label="Decrease by 1" size="sm" variant="outline" theme="gray" :disabled="Number(line.quantity) <= 1" @click="setBuilderQty(line, Number(line.quantity) - 1)" />
+                    <span class="w-8 text-center text-sm-semibold" :class="builderOver(line) ? 'text-ink-red-5' : ''">{{ line.quantity }}</span>
+                    <Button icon="lucide-plus" aria-label="Increase by 1" size="sm" variant="outline" theme="gray" :disabled="Number(line.quantity) >= builderAvailable(line)" @click="setBuilderQty(line, Number(line.quantity) + 1)" />
+                  </div>
+                </div>
+              </div>
+              </div>
+              <div class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
+                <p class="text-sm-semibold text-ink-green-7">Scan or Enter SKU</p>
+                <div class="mt-3 flex items-end gap-2">
+                  <TextInput ref="builderInput" v-model="builderScan" label="Scan item or bin barcode" class="flex-1" :disabled="builderBusy" @keyup.enter="builderScanSubmit()" />
+                  <Button icon="lucide-scan-line" aria-label="Scan barcode with camera" variant="outline" theme="green" @click="openScanner('builder')" />
+                </div>
+                <p class="mt-2 text-2xs text-ink-gray-5">Each scan adds 1. Scan a bin code to list what is in it.</p>
+              </div>
+
+              <div v-if="builderBin" class="rounded-4 border border-outline-gray-2 bg-surface-base">
+                <div class="flex items-center justify-between gap-2 border-b border-outline-gray-1 px-3 py-2">
+                  <p class="truncate text-xs-semibold text-ink-green-7"><span class="lucide-map-pin mr-1 inline-block size-3.5 align-text-bottom" aria-hidden="true" />{{ builderBin.label }} - tap to add</p>
+                  <div class="flex shrink-0 items-center gap-1">
+                    <Button v-if="builderBin.items.some((item) => item.available > 0)" label="Add all" size="sm" variant="outline" theme="green" :disabled="builderBusy" @click="addAllFromBuilderBin" />
+                    <Button icon="lucide-x" aria-label="Clear bin" size="sm" variant="ghost" theme="gray" @click="builderBin = null" />
+                  </div>
+                </div>
+                <button v-for="item in builderBin.items" :key="item.item_code" type="button" class="flex w-full items-center gap-2 border-b border-outline-gray-1 p-2 text-left last:border-0" :disabled="builderBinLeft(item) < 1" @click="builderScanSubmit(item.item_code)">
+                  <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.item_name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
+                  <div class="min-w-0 flex-1"><p class="truncate text-sm-semibold">{{ item.item_name }}</p><p class="truncate text-2xs text-ink-gray-5">{{ item.item_code }} - {{ builderBinCount(item) }}</p></div>
+                  <span v-if="builderBinLeft(item) >= 1" class="lucide-plus size-4 shrink-0 text-ink-green-6" aria-hidden="true" />
+                </button>
+                <p v-if="!builderBin.items.length" class="py-4 text-center text-xs text-ink-gray-5">This bin has no items.</p>
+              </div>
+            </div>
+            <div class="border-t border-outline-gray-2 p-3">
+              <Button :label="builderLines.length ? `Create pick task - ${builderLines.length} item${builderLines.length > 1 ? 's' : ''} - ${formatQty(builderUnits)} units` : 'Create pick task'" variant="solid" theme="green" class="w-full" :loading="pickActionLoading && pickActionTag === 'create'" :disabled="!builderCanCreate || pickMutationLoading" @click="submitPickBuilder" />
+            </div>
+          </div>
+        </div>
+
+        <div v-if="builderEditLine" class="wms-create-overlay wms-fixed" style="z-index: 40">
+          <div class="wms-create-sheet">
+            <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
+              <p class="truncate text-sm-semibold">{{ builderEditLine.item_name }}</p>
+              <Button icon="lucide-x" aria-label="Done" variant="ghost" theme="gray" @click="builderEditKey = ''" />
+            </div>
+            <div class="space-y-3 overflow-y-auto p-3">
+              <div>
+                <p class="mb-2 text-center text-2xs text-ink-gray-5">Quantity to pick</p>
+                <div class="flex items-center justify-center gap-3">
+                  <Button icon="lucide-minus" aria-label="Decrease by 1" size="lg" variant="outline" theme="gray" @click="setBuilderQty(builderEditLine, Number(builderEditLine.quantity) - 1)" />
+                  <TextInput :model-value="String(builderEditLine.quantity)" type="number" class="w-24 text-center" @update:model-value="setBuilderQty(builderEditLine, $event)" />
+                  <Button icon="lucide-plus" aria-label="Increase by 1" size="lg" variant="outline" theme="gray" :disabled="Number(builderEditLine.quantity) >= builderAvailable(builderEditLine)" @click="setBuilderQty(builderEditLine, Number(builderEditLine.quantity) + 1)" />
+                </div>
+              </div>
+              <div>
+                <p class="mb-2 text-2xs text-ink-gray-5">Pick from</p>
+                <button v-for="loc in builderEditLine.locations" :key="loc.warehouse" type="button" class="mb-2 flex w-full items-center justify-between rounded-4 border p-3 text-left disabled:opacity-50" :class="builderEditLine.warehouse === loc.warehouse ? 'border-outline-green-3 bg-surface-green-1' : 'border-outline-gray-2'" :disabled="loc.available < 1" @click="changeBuilderBin(builderEditLine, loc)">
+                  <span class="text-sm-semibold">{{ loc.label }}</span>
+                  <Badge :label="`${formatQty(loc.available)} available`" :theme="loc.available > 0 ? 'green' : 'red'" variant="subtle" />
+                </button>
+              </div>
+            </div>
+            <div class="space-y-2 border-t border-outline-gray-2 p-3">
+              <Button label="Done" variant="solid" theme="green" class="w-full" @click="builderEditKey = ''" />
+              <Button label="Remove from pick" variant="ghost" theme="red" class="w-full" @click="removeBuilderLine(builderEditLine)" />
             </div>
           </div>
         </div>

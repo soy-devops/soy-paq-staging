@@ -1,0 +1,138 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:MIL-{YYYY}-{#####}",
+ "creation": "2026-09-20 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "event",
+  "direction",
+  "medusa_order_id",
+  "medusa_order_number",
+  "outcome",
+  "column_break_mil1",
+  "customer",
+  "pick_task",
+  "acting_user",
+  "section_break_mil2",
+  "reason",
+  "payload"
+ ],
+ "fields": [
+  {
+   "fieldname": "event",
+   "fieldtype": "Data",
+   "default": "order.placed",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Event",
+   "read_only": 1
+  },
+  {
+   "fieldname": "direction",
+   "fieldtype": "Select",
+   "default": "Inbound",
+   "in_standard_filter": 1,
+   "label": "Direction",
+   "options": "Inbound\nOutbound",
+   "read_only": 1
+  },
+  {
+   "fieldname": "medusa_order_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Medusa Order",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "outcome",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Outcome",
+   "options": "Created\nDuplicate\nRejected",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_mil1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pick_task",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Pick Task",
+   "options": "Pick Task",
+   "read_only": 1
+  },
+  {
+   "fieldname": "acting_user",
+   "fieldtype": "Data",
+   "label": "Acted As",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_mil2",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payload",
+   "fieldtype": "Code",
+   "label": "Payload",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "medusa_order_number",
+   "fieldtype": "Data",
+   "label": "Medusa Order #",
+   "read_only": 1,
+   "in_list_view": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_link_count": 0,
+ "links": [],
+ "modified": "2026-09-26 21:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "Medusa Intake Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Warehouse Operator"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "medusa_order_id"
+}

@@ -5,7 +5,10 @@ import re
 from urllib.parse import quote
 
 import frappe
+from soypaq.billing import bill_completed_pick
 from frappe.utils import cint, flt, now_datetime
+
+from soypaq import medusa_client
 
 MOBILE_DOCTYPES = {
 	"Inbound ASN",
@@ -451,6 +454,16 @@ def _warehouse_company(warehouse: str | None) -> str:
 
 
 DEFAULT_COMPANY = "Example Company"
+
+
+def _setting(fieldname: str):
+	"""Read one SoyPaq Settings value; None if unset or the doctype is not migrated yet."""
+	try:
+		return frappe.db.get_single_value("SoyPaq Settings", fieldname) or None
+	except Exception:
+		return None
+
+
 _DEFAULT_WAREHOUSE_EXCLUDE = ("Damaged", "Returns")
 
 
@@ -461,7 +474,7 @@ def _default_warehouse(zone: str | None = None) -> str | None:
 	"Storage"). Without it, exception zones (Damaged/Returns) are skipped - they are
 	never a sensible default source or destination for a manually created task.
 	"""
-	filters = {"is_group": 0, "disabled": 0, "company": DEFAULT_COMPANY}
+	filters = {"is_group": 0, "disabled": 0, "company": _setting("default_company") or DEFAULT_COMPANY}
 	if zone:
 		filters["warehouse_name"] = ["like", f"%{zone}%"]
 		return frappe.db.get_value("Warehouse", filters, "name", order_by="name asc")
@@ -550,7 +563,20 @@ def _create_delivery_note(
 	return doc
 
 
-def _resolve_bin(code: str) -> str:
+def _suffix_bin(code: str, company: str | None = None) -> str | None:
+	"""A short bin code (A01) as a bin's suffix. The same code exists per customer, so more than one
+	match is ambiguous: say so rather than pick a tenant's bin at random."""
+	filters = {"name": ["like", f"%- {code} -%"], "is_group": 0}
+	if company:
+		filters["company"] = company
+	matches = frappe.get_all("Warehouse", filters=filters, pluck="name")
+	if len(matches) > 1:
+		companies = ", ".join(sorted({frappe.db.get_value("Warehouse", m, "company") for m in matches}))
+		frappe.throw(f"Bin {code} exists for several customers ({companies}). Scan or type the full bin name.")
+	return matches[0] if matches else None
+
+
+def _resolve_bin(code: str, company: str | None = None) -> str:
 	"""Resolve a scanned/typed bin code to a real, stock-holding Warehouse.
 
 	Accepts the full Warehouse name, its warehouse_name, or a short suffix code
@@ -566,7 +592,7 @@ def _resolve_bin(code: str) -> str:
 	if not name:
 		name = frappe.db.get_value("Warehouse", {"warehouse_name": code}, "name")
 	if not name:
-		name = frappe.db.get_value("Warehouse", {"name": ["like", f"%- {code} -%"]}, "name")
+		name = _suffix_bin(code, company)
 	if not name:
 		# Bin codes are zero-padded (A01) so they sort correctly past A09, but printed
 		# labels and habit both say "A1". Accept either, in both directions, so a
@@ -576,7 +602,7 @@ def _resolve_bin(code: str) -> str:
 		for variant in {padded, unpadded} - {code}:
 			name = frappe.db.get_value(
 				"Warehouse", {"warehouse_name": variant}, "name"
-			) or frappe.db.get_value("Warehouse", {"name": ["like", f"%- {variant} -%"]}, "name")
+			) or _suffix_bin(variant, company)
 			if name:
 				break
 	if not name:
@@ -606,11 +632,14 @@ def _resolve_customer(customer: str | None) -> str:
 		if not frappe.db.exists("Customer", customer):
 			frappe.throw(f"Customer {customer} was not found in ERPNext.")
 		return customer
-	default_customer = frappe.db.get_value("Customer", {"name": DEFAULT_TEST_CUSTOMER, "disabled": 0}, "name")
+	if _setting("customer_mode") == "Manual":
+		frappe.throw("Choose a customer for this task.")
+	default_name = _setting("default_customer") or DEFAULT_TEST_CUSTOMER
+	default_customer = frappe.db.get_value("Customer", {"name": default_name, "disabled": 0}, "name")
 	if not default_customer:
 		frappe.throw(
-			f"Default customer '{DEFAULT_TEST_CUSTOMER}' was not found (or is disabled). "
-			"Pick a customer explicitly, or update DEFAULT_TEST_CUSTOMER."
+			f"Default customer '{default_name}' was not found (or is disabled). "
+			"Pick a customer explicitly, or set the Default Customer in SoyPaq Settings."
 		)
 	return default_customer
 
@@ -635,6 +664,9 @@ def _parse_manual_items(items) -> list[dict]:
 		quantity = flt(entry.get("quantity"))
 		if not item_code:
 			frappe.throw("Every line needs an item code.")
+		# A scanned barcode is as valid as an item code. Unresolved values fall through so the
+		# "not found" / "disabled" errors below stay exactly as they were.
+		item_code = _resolve_scanned_item(item_code) or item_code
 		if quantity <= 0:
 			frappe.throw(f"Quantity for {item_code} must be greater than zero.")
 		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "disabled"], as_dict=True)
@@ -643,7 +675,14 @@ def _parse_manual_items(items) -> list[dict]:
 		if item.disabled:
 			frappe.throw(f"Item {item_code} is disabled in ERPNext.")
 		rows.append(
-			{"item_code": item_code, "item_name": item.item_name, "uom": item.stock_uom, "quantity": quantity}
+			{
+				"item_code": item_code,
+				"item_name": item.item_name,
+				"uom": item.stock_uom,
+				"quantity": quantity,
+				# Optional per-line bin (used by create_pick_task to split one task per bin).
+				"warehouse": _resolve_bin(entry["warehouse"]) if entry.get("warehouse") else None,
+			}
 		)
 	return rows
 
@@ -745,6 +784,9 @@ def _line_totals(rows, quantity_field: str) -> dict[str, float]:
 def _source_integrity(doc, order: dict) -> dict:
 	if not doc or not order:
 		return {"status": "unlinked", "label": "Source order not linked", "details": []}
+	if order.get("source_kind") == "medusa":
+		# No Sales Order lines to compare against; the Medusa intake log is the record.
+		return {"status": "external", "label": "Medusa order", "details": []}
 
 	task_lines = _line_totals(doc.get("pick_items"), "required_qty")
 	order_lines = _line_totals(order.get("items"), "quantity")
@@ -767,6 +809,54 @@ def _source_integrity(doc, order: dict) -> dict:
 	}
 
 
+def _origin_pick(doc):
+	"""The Pick Task at the start of a task's lineage (Pack.warehouse = pick, Shipment.warehouse = pack)."""
+	if not doc:
+		return None
+	if doc.doctype == "Pick Task":
+		return doc
+	if doc.doctype == "Shipment Task":
+		doc = _origin_pick_link(doc, "Pack Task")
+	if doc and doc.doctype == "Pack Task":
+		return _origin_pick_link(doc, "Pick Task")
+	return None
+
+
+def _origin_pick_link(doc, doctype: str):
+	name = doc.get("warehouse")
+	return frappe.get_doc(doctype, name) if name and frappe.db.exists(doctype, name) else None
+
+
+def _medusa_context(doc) -> dict:
+	"""Where an order came from when it entered through Medusa (no Sales Order exists for these yet)."""
+	pick = _origin_pick(doc)
+	order_id = pick.get("medusa_order_id") if pick else None
+	if not order_id:
+		return {}
+	number = pick.get("medusa_order_number")
+	intake = frappe.db.get_value(
+		"Medusa Intake Log", {"medusa_order_id": order_id, "outcome": "Created"}, ["name", "creation"], as_dict=True
+	)
+	return {
+		"doctype": "Medusa order",
+		"name": f"#{number}" if number else order_id,
+		"party_name": pick.get("customer"),
+		"external_reference": f"#{number}" if number else order_id,
+		"reference_label": "Medusa",
+		"medusa_order_id": order_id,
+		"transaction_date": str(intake.creation.date()) if intake else "",
+		"route": _route("Medusa Intake Log", intake.name) if intake else "",
+		"source_kind": "medusa",
+	}
+
+
+def _task_source(doc) -> dict:
+	"""Source order for a task: the linked Sales Order, else the Medusa order it came from."""
+	if not doc:
+		return {}
+	return _sales_order_context(doc.get("sales_order")) or _medusa_context(doc)
+
+
 def _task(doc, label: str) -> dict | None:
 	if not doc:
 		return None
@@ -774,7 +864,7 @@ def _task(doc, label: str) -> dict | None:
 	order = (
 		_purchase_order_context(doc.get("purchase_order"))
 		if doc.doctype == "Inbound ASN"
-		else _sales_order_context(doc.get("sales_order"))
+		else _task_source(doc)
 	)
 	warehouse = doc.get("target_warehouse") if doc.doctype == "Inbound ASN" else doc.get("warehouse")
 	assigned_user = doc.get("assigned_to") if doc.doctype == "Pick Task" else doc.get("assigned_user")
@@ -830,6 +920,7 @@ def _item_rows(doc, fieldname: str, quantity_field: str) -> list[dict]:
 				"assigned_bin": row.get("assigned_bin") or "",
 				"source_warehouse": row.get("source_warehouse") or "",
 				"source_bin": row.get("source_bin") or "",
+				"bin_confirmed": bool(cint(row.get("bin_confirmed"))),
 				"status": row.get("status") or row.get("condition") or "Expected",
 				"exception_reason": row.get("exception_reason") or "",
 				"exception_note": row.get("exception_note") or "",
@@ -844,7 +935,7 @@ def _inventory_snapshot() -> dict:
 	items = frappe.get_all(
 		"Item",
 		filters={"is_stock_item": 1, "disabled": 0},
-		fields=["name", "item_name", "item_group", "stock_uom", "image", "modified"],
+		fields=["name", "item_name", "item_group", "stock_uom", "image", "modified", "soy_product", "soy_color", "soy_size", "soy_collection"],
 		order_by="item_name asc",
 		limit_page_length=500,
 	)
@@ -896,6 +987,7 @@ def _inventory_snapshot() -> dict:
 			warehouse_totals[stock_bin.warehouse]["on_hand"] += actual
 			warehouse_totals[stock_bin.warehouse]["reserved"] += reserved
 
+	warehouse_company = {warehouse.name: warehouse.company for warehouse in warehouses}
 	rows = []
 	for item in items:
 		locations = sorted(
@@ -910,6 +1002,11 @@ def _inventory_snapshot() -> dict:
 				"item_code": item.name,
 				"item_name": item.item_name or item.name,
 				"item_group": item.item_group,
+				"product": item.get("soy_product") or "",
+				"color": item.get("soy_color") or "",
+				"size": item.get("soy_size") or "",
+				"collection": item.get("soy_collection") or "",
+				"company": warehouse_company.get(locations[0]["warehouse"], "") if locations else "",
 				"uom": item.stock_uom,
 				"image": item.image,
 				"modified": item.modified,
@@ -1245,13 +1342,13 @@ def get_task_preview(doctype: str, name: str) -> dict:
 	source: dict = {}
 	source_integrity: dict = {}
 	if doctype in ("Pick Task", "Pack Task"):
-		source = _sales_order_context(doc.get("sales_order"))
-		source_integrity = _source_integrity(doc, source)
+		source = _task_source(doc)
+		source_integrity = _source_integrity(doc, source) if source.get("doctype") == "Sales Order" else {}
 	elif doctype == "Shipment Task":
 		# Same lineage as Pick/Pack, but _source_integrity compares against a
 		# "pick_items" fieldname that Shipment Task doesn't have - showing origin
 		# here without a (meaningless) match/mismatch verdict.
-		source = _sales_order_context(doc.get("sales_order"))
+		source = _task_source(doc)
 	elif doctype == "Inbound Package" and doc.get("inbound_asn"):
 		source = {
 			"doctype": "Inbound ASN",
@@ -1285,6 +1382,39 @@ def _writable_task(doctype: str, name: str):
 	if doc.get("status") in ("Completed", "Cancelled", "Shipped"):
 		frappe.throw(f"{doctype} {name} is already {doc.get('status')}.")
 	return doc
+
+
+def _row_bin(row) -> str:
+	return row.get("source_bin") or row.get("source_warehouse") or ""
+
+
+def _pick_bins(doc) -> list[str]:
+	"""The distinct bins a Pick Task walks through, in row order."""
+	bins: list[str] = []
+	for row in doc.get("pick_items") or []:
+		bin_name = _row_bin(row)
+		if bin_name and bin_name not in bins:
+			bins.append(bin_name)
+	return bins
+
+
+def _bin_confirmed(doc, row) -> bool:
+	"""Has the picker confirmed the bin this row sits in?
+
+	A single-bin task keeps the original task-level gate (`pick_state`). A multi-bin task confirms
+	each bin on its own (`bin_confirmed` on the rows), so being at one bin unlocks only its rows.
+	"""
+	if len(_pick_bins(doc)) <= 1:
+		return doc.get("pick_state") == "Waiting for Item"
+	return bool(cint(row.get("bin_confirmed")))
+
+
+def _require_bin_confirmed(doc, row, message: str) -> None:
+	if _bin_confirmed(doc, row):
+		return
+	if len(_pick_bins(doc)) > 1:
+		frappe.throw(f"Confirm bin {_row_bin(row)} first. {message}")
+	frappe.throw(message)
 
 
 def _task_row(doc, item_code: str):
@@ -1449,9 +1579,9 @@ def get_mobile_bootstrap(
 	pack_task = _select_doc("Pack Task", pack_task_name)
 	shipment_task = _select_doc("Shipment Task", shipment_task_name)
 
-	pick_order = _sales_order_context(pick_task.get("sales_order")) if pick_task else {}
-	pack_order = _sales_order_context(pack_task.get("sales_order")) if pack_task else {}
-	shipment_order = _sales_order_context(shipment_task.get("sales_order")) if shipment_task else {}
+	pick_order = _task_source(pick_task)
+	pack_order = _task_source(pack_task)
+	shipment_order = _task_source(shipment_task)
 	inbound_order = _purchase_order_context(inbound_asn.get("purchase_order")) if inbound_asn else {}
 
 	receive_task_data = _task(inbound_asn, "Receive")
@@ -1545,6 +1675,8 @@ def get_mobile_bootstrap(
 			"task": pick_task_data,
 			"context": {
 				**pick_order,
+				# A Medusa order has no document of its own to title the screen with; keep the task name.
+				**({"name": pick_task.name} if pick_order.get("source_kind") == "medusa" else {}),
 				"task_customer": pick_task.get("customer") if pick_task else "",
 				"warehouse": pick_task.get("warehouse") if pick_task else "",
 				"assigned_to": _user(pick_task.get("assigned_to") if pick_task else None),
@@ -1754,6 +1886,91 @@ def _resolve_scanned_item(code: str) -> str | None:
 	if frappe.db.exists("Item", code) and not frappe.db.get_value("Item", code, "disabled"):
 		return code
 	return None
+
+
+def _warehouse_label(warehouse: str) -> str:
+	return frappe.db.get_value("Warehouse", warehouse, "warehouse_name") or warehouse
+
+
+@frappe.whitelist()
+def resolve_scan(code: str, warehouse: str = None) -> dict:
+	"""Resolve one scanned/typed code for the pick builder: an item (barcode or item code) or a bin.
+
+	Item: every bin holding stock, with `available` = on hand minus what open Pick Tasks already
+	intend to take (the same figure create_pick_task enforces), plus `default_warehouse` - the
+	caller's `warehouse` if it holds stock, else the bin with the most available.
+	Bin: the items physically in it.
+	An unknown code is `resolved: False`, never an error, so a bad scan does not interrupt scanning.
+	"""
+	code = (code or "").strip()
+	if not code:
+		frappe.throw("Scan or enter an item barcode or bin code.")
+
+	item_code = _resolve_scanned_item(code)
+	if item_code:
+		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "image"], as_dict=True)
+		locations = []
+		for row in frappe.get_all(
+			"Bin", filters={"item_code": item_code, "actual_qty": [">", 0]}, fields=["warehouse", "actual_qty"]
+		):
+			committed = _open_pick_reserved_qty(item_code, row.warehouse)
+			locations.append(
+				{
+					"warehouse": row.warehouse,
+					"label": _warehouse_label(row.warehouse),
+					"on_hand": flt(row.actual_qty),
+					"committed": committed,
+					"available": flt(row.actual_qty) - committed,
+				}
+			)
+		locations.sort(key=lambda loc: (-loc["available"], loc["warehouse"]))
+		default_warehouse = None
+		if locations:
+			preferred = next((loc for loc in locations if loc["warehouse"] == warehouse), None)
+			default_warehouse = (preferred or locations[0])["warehouse"]
+		return {
+			"resolved": True,
+			"kind": "item",
+			"item_code": item_code,
+			"item_name": item.item_name or item_code,
+			"uom": item.stock_uom,
+			"image": item.image,
+			"locations": locations,
+			"default_warehouse": default_warehouse,
+		}
+
+	try:
+		bin_name = _resolve_bin(code)
+	except frappe.ValidationError:
+		return {"resolved": False, "code": code}
+
+	items = []
+	for row in frappe.get_all(
+		"Bin", filters={"warehouse": bin_name, "actual_qty": [">", 0]}, fields=["item_code", "actual_qty"]
+	):
+		info = frappe.db.get_value("Item", row.item_code, ["item_name", "stock_uom", "image", "disabled"], as_dict=True)
+		if not info or info.disabled:
+			continue
+		committed = _open_pick_reserved_qty(row.item_code, bin_name)
+		items.append(
+			{
+				"item_code": row.item_code,
+				"item_name": info.item_name or row.item_code,
+				"uom": info.stock_uom,
+				"image": info.image,
+				"on_hand": flt(row.actual_qty),
+				"committed": committed,
+				"available": flt(row.actual_qty) - committed,
+			}
+		)
+	items.sort(key=lambda entry: entry["item_name"])
+	return {
+		"resolved": True,
+		"kind": "bin",
+		"warehouse": bin_name,
+		"label": _warehouse_label(bin_name),
+		"items": items,
+	}
 
 
 @frappe.whitelist()
@@ -2082,88 +2299,167 @@ def _open_pick_reserved_qty(item_code: str, warehouse: str) -> float:
 	return sum(max(flt(row.required_qty) - flt(row.picked_qty), 0) for row in rows)
 
 
+PICK_NAMING_SERIES = "PICK-MIA-.#####"
+
+
+@frappe.whitelist()
+def preview_pick_task_names(count: int = 8) -> list[str]:
+	"""The next Pick Task names, for the builder sheet to label each pending task.
+
+	A preview only: the real name is assigned when the task is inserted, so another operator
+	creating a task in between makes the actual name differ. create_pick_task returns the real ones.
+	"""
+	prefix = PICK_NAMING_SERIES.split(".")[0]
+	digits = PICK_NAMING_SERIES.count("#")
+	# `tabSeries` has no `creation` column, so get_value (which orders by it) cannot be used.
+	row = frappe.db.sql("select `current` from `tabSeries` where name = %s", prefix)
+	current = cint(row[0][0]) if row else 0
+	return [f"{prefix}{current + i + 1:0{digits}d}" for i in range(max(1, min(cint(count), 20)))]
+
+
 @frappe.whitelist()
 def create_pick_task(customer: str = None, warehouse: str = None, items=None) -> dict:
 	"""Create a real, standalone Pick Task for testing when no Sales Order exists yet.
 
-	The record is a genuine Pick Task row (not a mock) - it immediately works with
+	One task, even when the items sit in different bins: each line carries its own bin (the
+	line's `warehouse`, else the `warehouse` argument, else the default Storage zone) and the
+	picker confirms each bin as they reach it (see confirm_pick_location). A task holds an item in
+	one bin, so the same item on two lines in different bins is rejected; repeats in the same bin
+	merge. Availability is checked per bin before anything is created.
+
+	The record is a genuine Pick Task (not a mock) - it immediately works with
 	confirm_pick_location / pick_item / unpick_item / flag_pick_item / complete_pick.
+	Returns `name`/`route` plus a one-entry `tasks` list (the shape the builder expects).
 	"""
 	rows = _parse_manual_items(items)
 	# Zone-resolved, not DEFAULT_COMPANY-resolved: the sanitized public-mirror constant
 	# matches nothing on a real site, which made this throw for every real caller.
-	warehouse = warehouse or _zone_warehouse("Storage")
-	if not warehouse:
-		frappe.throw("No warehouse is configured in ERPNext.")
+	default_warehouse = warehouse or _zone_warehouse("Storage")
+
+	lines: dict[str, dict] = {}
+	for row in rows:
+		bin_name = row.get("warehouse") or default_warehouse
+		if not bin_name:
+			frappe.throw("No warehouse is configured in ERPNext.")
+		line = lines.get(row["item_code"])
+		if not line:
+			lines[row["item_code"]] = {**row, "bin": bin_name}
+		elif line["bin"] != bin_name:
+			frappe.throw(
+				f"{row['item_code']} is on this pick from two bins ({line['bin']} and {bin_name}). "
+				"A pick task holds an item in one bin - use one line per item."
+			)
+		else:
+			line["quantity"] = flt(line["quantity"]) + flt(row["quantity"])
 
 	# Available = on-hand minus what other open Pick Tasks already intend to take -
 	# without this, two pickers (or one picker starting two tasks) could both be told
 	# there's enough stock for the same physical units.
-	requested_in_this_call = {}
-	for row in rows:
-		requested_in_this_call[row["item_code"]] = requested_in_this_call.get(row["item_code"], 0) + flt(
-			row["quantity"]
-		)
-	for item_code, requested_qty in requested_in_this_call.items():
+	for item_code, line in lines.items():
 		on_hand = flt(
-			frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0
+			frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": line["bin"]}, "actual_qty") or 0
 		)
-		already_reserved = _open_pick_reserved_qty(item_code, warehouse)
+		already_reserved = _open_pick_reserved_qty(item_code, line["bin"])
 		available_qty = on_hand - already_reserved
-		if requested_qty > available_qty:
+		if flt(line["quantity"]) > available_qty:
 			frappe.throw(
-				f"Only {available_qty:g} units of {item_code} available in {warehouse} "
+				f"Only {available_qty:g} units of {item_code} available in {line['bin']} "
 				f"({on_hand:g} on hand, {already_reserved:g} already committed to other open picks) - "
-				f"cannot pick {requested_qty:g}."
+				f"cannot pick {flt(line['quantity']):g}."
 			)
+
+	ordered = sorted(lines.values(), key=lambda line: (line["bin"], line["item_name"] or line["item_code"]))
+	bins = list(dict.fromkeys(line["bin"] for line in ordered))
+	companies = {_warehouse_company(bin_name) for bin_name in bins}
+	if len(companies) > 1:
+		frappe.throw("The bins in one pick task must belong to the same company.")
 
 	if not customer:
 		# DEFAULT_TEST_CUSTOMER is the same sanitized-mirror problem as DEFAULT_COMPANY -
 		# infer from the warehouse's company instead, which matches on this site because
 		# a 3PL tenant's Customer and Company share a name by convention (see AGENT.md).
-		company = _warehouse_company(warehouse)
+		company = next(iter(companies), "")
 		if company and frappe.db.exists("Customer", company):
 			customer = company
 
 	doc = frappe.new_doc("Pick Task")
-	doc.naming_series = "PICK-MIA-.#####"
+	doc.naming_series = PICK_NAMING_SERIES
 	doc.status = "Pending"
 	doc.customer = _resolve_customer(customer)
-	doc.warehouse = warehouse
+	doc.warehouse = bins[0]
 	doc.pick_state = "Waiting for Bin"
-	doc.scan_bin = warehouse
-	doc.scan_item_barcode = rows[0]["item_code"]
-	doc.current_status = f"Manually created with {len(rows)} line(s), no source order"
-	for row in rows:
+	doc.scan_bin = bins[0]
+	doc.scan_item_barcode = ordered[0]["item_code"]
+	doc.current_status = (
+		f"Manually created with {len(ordered)} line(s) across {len(bins)} bins, no source order"
+		if len(bins) > 1
+		else f"Manually created with {len(ordered)} line(s), no source order"
+	)
+	for line in ordered:
 		doc.append(
 			"pick_items",
 			{
-				"item_code": row["item_code"],
-				"item_name": row["item_name"],
-				"uom": row["uom"],
-				"required_qty": row["quantity"],
+				"item_code": line["item_code"],
+				"item_name": line["item_name"],
+				"uom": line["uom"],
+				"required_qty": line["quantity"],
 				"picked_qty": 0,
-				"source_warehouse": warehouse,
-				"source_bin": warehouse,
+				"source_warehouse": line["bin"],
+				"source_bin": line["bin"],
 				"status": "Pending",
 			},
 		)
 	_update_pick_totals(doc)
 	doc.insert()
 	_publish_task_update(doc)
-	return {"name": doc.name, "route": _route("Pick Task", doc.name)}
+	route = _route("Pick Task", doc.name)
+	return {
+		"name": doc.name,
+		"route": route,
+		"tasks": [{"name": doc.name, "warehouses": bins, "route": route}],
+	}
 
 
 @frappe.whitelist()
 def confirm_pick_location(task_name: str, location_code: str) -> dict:
-	"""Persist a validated bin scan on a Pick Task."""
+	"""Persist a validated bin scan on a Pick Task.
+
+	Single-bin task: the code must be the task's bin. Multi-bin task: the code may be any of its
+	bins (full name or short code); only that bin's rows are unlocked, and `scan_bin` moves on to
+	the next bin still to confirm.
+	"""
 	doc = _writable_task("Pick Task", task_name)
-	expected = doc.get("scan_bin") or doc.get("warehouse")
 	location_code = (location_code or "").strip()
-	if not expected or location_code.casefold() != str(expected).casefold():
-		frappe.throw(
-			f"Expected location {expected or 'not configured'}, received {location_code or 'blank'}."
-		)
+	bins = _pick_bins(doc)
+
+	if len(bins) > 1:
+		match = next((b for b in bins if b.casefold() == location_code.casefold()), None)
+		if not match and location_code:
+			try:
+				resolved = _resolve_bin(location_code, company=doc.get("customer"))
+			except frappe.ValidationError:
+				resolved = None
+			match = resolved if resolved in bins else None
+		if not match:
+			frappe.throw(
+				f"{location_code or 'Blank'} is not a bin on this pick task. Bins: {', '.join(bins)}."
+			)
+		for row in doc.get("pick_items") or []:
+			if _row_bin(row) == match:
+				row.bin_confirmed = 1
+		pending = [b for b in bins if not all(
+			cint(r.get("bin_confirmed")) for r in doc.get("pick_items") or [] if _row_bin(r) == b
+		)]
+		doc.scan_bin = pending[0] if pending else match
+		location_code = match
+	else:
+		expected = doc.get("scan_bin") or doc.get("warehouse")
+		if not expected or location_code.casefold() != str(expected).casefold():
+			frappe.throw(
+				f"Expected location {expected or 'not configured'}, received {location_code or 'blank'}."
+			)
+		for row in doc.get("pick_items") or []:
+			row.bin_confirmed = 1
 
 	doc.status = "Picking"
 	doc.pick_state = "Waiting for Item"
@@ -2182,9 +2478,8 @@ def pick_item(task_name: str, item_code: str, quantity: float = 1) -> dict:
 	stock move happens once, at ship time, straight out of that same bin.
 	"""
 	doc = _writable_task("Pick Task", task_name)
-	if doc.get("pick_state") != "Waiting for Item":
-		frappe.throw("Confirm the pick location before scanning an item.")
 	row = _task_row(doc, item_code)
+	_require_bin_confirmed(doc, row, "Confirm the pick location before scanning an item.")
 	quantity = flt(quantity)
 	if quantity <= 0:
 		frappe.throw("Pick quantity must be greater than zero.")
@@ -2210,9 +2505,8 @@ def pick_item(task_name: str, item_code: str, quantity: float = 1) -> dict:
 def unpick_item(task_name: str, item_code: str, quantity: float = 1) -> dict:
 	"""Reduce a picked quantity on a Pick Task row."""
 	doc = _writable_task("Pick Task", task_name)
-	if doc.get("pick_state") != "Waiting for Item":
-		frappe.throw("Confirm the pick location before changing an item.")
 	row = _task_row(doc, item_code)
+	_require_bin_confirmed(doc, row, "Confirm the pick location before changing an item.")
 	quantity = flt(quantity)
 	if quantity <= 0:
 		frappe.throw("Pick quantity must be greater than zero.")
@@ -2242,6 +2536,7 @@ def pick_all(task_name: str) -> dict:
 	for row in doc.get("pick_items") or []:
 		if frappe.db.get_value("Item", row.item_code, "disabled"):
 			frappe.throw(f"Item {row.item_code} is disabled in ERPNext.")
+		row.bin_confirmed = 1  # confirming every quantity implies every bin
 		remaining = max(flt(row.required_qty) - flt(row.picked_qty), 0)
 		if remaining <= 0:
 			continue
@@ -2273,9 +2568,8 @@ def flag_pick_item(
 	# rows "Picked" instead of "Short". cint() is the real bool.
 	handpick = cint(handpick)
 	doc = _writable_task("Pick Task", task_name)
-	if doc.get("pick_state") != "Waiting for Item":
-		frappe.throw("Confirm the pick location before updating an item.")
 	row = _task_row(doc, item_code)
+	_require_bin_confirmed(doc, row, "Confirm the pick location before updating an item.")
 	reason = (reason or "").strip()
 	allowed = {"Damaged", "No Stock", "Barcode Issue", "Short Picked", "Wrong Item"}
 	if reason not in allowed:
@@ -2395,7 +2689,13 @@ def complete_pick(task_name: str, skip_downstream: bool = False) -> dict:
 	(see `_auto_complete_downstream`) instead of stopping the chain - the actual
 	stock-out happens here, at the Delivery Note, exactly as it would through the
 	manual Pack/Ship screens.
+
+	The WMS UI posts this as a query-string value, so it arrives here as the literal
+	string "0" (found 2026-09-13: `bool = False` in the signature does not save you -
+	`if "0":` is truthy in Python, so "Send to Pack" was silently taking the bypass
+	branch every time). cint() is the fix - it parses "0"/"1"/"true"/"false" correctly.
 	"""
+	skip_downstream = cint(skip_downstream)
 	doc = _writable_task("Pick Task", task_name)
 	_update_pick_totals(doc)
 	if flt(doc.total_picked_qty) < flt(doc.total_required_qty):
@@ -2412,6 +2712,7 @@ def complete_pick(task_name: str, skip_downstream: bool = False) -> dict:
 	doc.completed_at = now_datetime()
 	doc.save()
 	_log_pick_action(doc, "Completed", quantity=doc.total_picked_qty)
+	bill_completed_pick(doc)
 	if skip_downstream:
 		_auto_complete_downstream(doc)
 	else:
@@ -2667,12 +2968,16 @@ def _writable_shipment(task_name: str):
 
 @frappe.whitelist()
 def generate_shipment_label(task_name: str) -> dict:
-	"""Buy a real shipping label via Shippo and persist the tracking number / label URL."""
-	from soypaq import shippo_client
+	"""Reserve a tracking number/label via the site's configured shipping provider
+	(site config `shipping_provider`: "manual" by default - no external call, no cost;
+	"shippo" or "easyship" buy a real label). See shipping_providers.py - adding another
+	carrier is a new ShippingProvider subclass there, this call site doesn't change.
+	"""
+	from soypaq import shipping_providers
 
 	doc = _writable_shipment(task_name)
 	if not doc.get("tracking_number"):
-		label = shippo_client.buy_cheapest_label()
+		label = shipping_providers.get_provider().buy_label()
 		doc.tracking_number = label["tracking_number"]
 		doc.carrier = label["carrier"]
 		doc.shipping_label_url = label["label_url"]
@@ -2718,6 +3023,248 @@ def mark_shipment_shipped(task_name: str) -> dict:
 	doc.save()
 	_publish_task_update(doc)
 	return {"name": doc.name, "status": doc.status, "delivery_note": delivery_note.name}
+
+
+def _check_medusa_secret() -> None:
+	"""Auth for the Medusa->ERPNext direction: a shared secret header, not a Frappe
+	user session - the caller is the Medusa backend, not a logged-in operator.
+	Mirrors medusa_client._shared_secret() on the outbound side.
+	"""
+	expected = frappe.conf.get("medusa_erp_shared_secret")
+	if not expected:
+		frappe.throw("medusa_erp_shared_secret is not configured on this site.")
+	got = frappe.get_request_header("X-ERP-Secret")
+	if not got or got != expected:
+		frappe.throw("Invalid or missing shared secret.", frappe.PermissionError)
+
+
+def _bridge_user() -> str:
+	"""The machine user Medusa orders run as - never Administrator. Its roles and its
+	Customer/Company User Permissions are the tenant boundary (MULTI_TENANT_SECURITY.md)."""
+	user = frappe.conf.get("medusa_bridge_user") or "svc-medusa-bridge@soy-ops.com"
+	if not frappe.db.get_value("User", {"name": user, "enabled": 1}):
+		frappe.throw(f"Medusa bridge user {user} does not exist or is disabled.")
+	return user
+
+
+def _medusa_tenants() -> list[str]:
+	"""The Customers the bridge user may act for: its Customer User Permissions, nothing else.
+	The permission list is the tenant boundary, so an order can only ever land on one of these."""
+	user = _bridge_user()
+	customers = frappe.get_all(
+		"User Permission", filters={"user": user, "allow": "Customer"}, pluck="for_value", order_by="creation"
+	)
+	if not customers:
+		frappe.throw(f"{user} needs at least one Customer User Permission to act as a Medusa tenant.")
+	return customers
+
+
+def _medusa_tenant() -> str:
+	"""The bridge's tenant when it serves exactly one; several means the caller must route by SKU."""
+	customers = _medusa_tenants()
+	if len(customers) != 1:
+		frappe.throw(f"{_bridge_user()} serves {len(customers)} tenants; route the order by its SKUs instead.")
+	return customers[0]
+
+
+def _sku_tenant(item_code: str, tenants: list[str]) -> str | None:
+	"""Which permitted tenant owns an item: the tenant group in its item group's ancestry (Acme > Acme - Tees)."""
+	group = frappe.db.get_value("Item", item_code, "item_group")
+	while group and group != "All Item Groups":
+		if group in tenants:
+			return group
+		group = frappe.db.get_value("Item Group", group, "parent_item_group")
+	return tenants[0] if len(tenants) == 1 else None
+
+
+def _order_tenant(skus: list[str]) -> str:
+	"""One tenant per order. A SKU nobody permitted owns, or a cart that mixes tenants, is rejected."""
+	tenants = _medusa_tenants()
+	owners = {sku: _sku_tenant(sku, tenants) for sku in skus}
+	missing = [sku for sku, owner in owners.items() if not owner]
+	if missing:
+		frappe.throw(f"SKU {', '.join(missing)} does not belong to a tenant this Medusa bridge serves.")
+	distinct = sorted(set(owners.values()))
+	if len(distinct) > 1:
+		frappe.throw(f"Order mixes tenants ({', '.join(distinct)}); each tenant's items must be a separate order.")
+	return distinct[0]
+
+
+def _log_medusa_intake(
+	order_id, outcome, reason=None, pick_task=None, customer=None, payload=None, order_number=None
+):
+	frappe.get_doc(
+		{
+			"doctype": "Medusa Intake Log",
+			"medusa_order_id": order_id,
+			"medusa_order_number": order_number,
+			"outcome": outcome,
+			"reason": reason,
+			"pick_task": pick_task,
+			"customer": customer,
+			"acting_user": frappe.session.user,
+			"payload": payload,
+		}
+	).insert(ignore_permissions=True)
+
+
+@frappe.whitelist()
+def sync_stock_to_medusa() -> dict:
+	"""Push ERPNext's current available stock (per Flow B - ERPNext is the source of
+	truth, Medusa only ever receives a mirror) to Medusa, keyed by Item Code == Medusa
+	variant SKU (Phase 1 rule: exact 1:1 match, no fuzzy matching).
+
+	Scoped to the Medusa tenant's own warehouses (Company == tenant Customer, the 3PL
+	convention in AGENT.md) - Medusa is shared, so another client's Bins must never be
+	mirrored into it.
+
+	Prototype trigger: call this manually (Settings screen or bench) rather than on a
+	schedule or a Stock Ledger Entry hook - both are real Phase-2 work, not needed to
+	prove the loop end to end.
+	"""
+	tenants = _medusa_tenants()
+	tenant = ", ".join(tenants)
+	tenant_warehouses = frappe.get_all("Warehouse", filters={"company": ["in", tenants]}, pluck="name")
+	if not tenant_warehouses:
+		frappe.throw(f"No warehouses belong to company {tenant}; nothing to mirror.")
+	bins = frappe.get_all(
+		"Bin",
+		fields=["item_code", "warehouse", "actual_qty", "reserved_qty"],
+		filters={"actual_qty": [">", 0], "warehouse": ["in", tenant_warehouses]},
+	)
+	excluded_warehouses = set(
+		frappe.get_all(
+			"Warehouse",
+			filters={"warehouse_name": ["like", "%Damaged%"]},
+			pluck="name",
+		)
+		+ frappe.get_all(
+			"Warehouse",
+			filters={"warehouse_name": ["like", "%Returns%"]},
+			pluck="name",
+		)
+	)
+	available_by_item: dict[str, float] = {}
+	for row in bins:
+		if row.warehouse in excluded_warehouses:
+			continue
+		available = flt(row.actual_qty) - flt(row.reserved_qty)
+		available_by_item[row.item_code] = available_by_item.get(row.item_code, 0) + available
+
+	levels = [{"sku": item_code, "quantity": max(qty, 0)} for item_code, qty in available_by_item.items()]
+	result = medusa_client.push_stock_levels(levels)
+	return {"tenant": tenant, "pushed": len(levels), "medusa_response": result}
+
+
+def _best_pick_bin(item_code: str, quantity: float, storage_zone: str | None) -> str | None:
+	"""The Storage-zone bin with the most available stock (on hand minus open picks) that covers `quantity`."""
+	if not storage_zone:
+		return None
+	best, best_available = None, 0.0
+	for row in frappe.get_all(
+		"Bin",
+		filters={"item_code": item_code, "actual_qty": [">", 0]},
+		fields=["warehouse", "actual_qty"],
+	):
+		if frappe.db.get_value("Warehouse", row.warehouse, "parent_warehouse") != storage_zone:
+			continue
+		available = flt(row.actual_qty) - _open_pick_reserved_qty(item_code, row.warehouse)
+		if available >= flt(quantity) and available > best_available:
+			best, best_available = row.warehouse, available
+	return best
+
+
+@frappe.whitelist(allow_guest=True)
+def create_order_from_medusa(
+	order_id: str = None, customer_name: str = None, items=None, display_id: str = None
+) -> dict:
+	"""Turn a Medusa order.placed payload into a real Pick Task (Flow A).
+
+	Prototype scope, deliberately smaller than the full spec in MEDUSA_INTEGRATION.md:
+	- No Sales Order in between yet - creates the Pick Task directly via create_pick_task,
+	  same as the existing manual-testing path. The spec's idempotent-Sales-Order step is
+	  real Phase-1 work, not required to prove Medusa->WMS->Pack->Ship end to end.
+	- Single-bin only, same limit create_pick_task already has.
+	items: [{sku, quantity}] - sku must equal an ERPNext Item Code exactly (Phase 1 rule:
+	hard-fail on a miss, no fuzzy matching, no auto-creating items).
+
+	Auth is the shared secret; after it passes the call runs as the scoped bridge user
+	(not Administrator), so roles and Customer/Company User Permissions apply. The
+	customer is always the bridge user's tenant - `customer_name` from the payload is
+	ignored, since a webhook must not choose which tenant it writes to. Every attempt
+	after the secret check lands in Medusa Intake Log, which also makes replays
+	idempotent: an order id already Created returns its existing Pick Task.
+	"""
+	_check_medusa_secret()
+	frappe.set_user(_bridge_user())
+	order_id = (order_id or "").strip()
+	order_number = str(display_id or "").strip() or None
+	payload = items if isinstance(items, str) else json.dumps(items, default=str)
+	customer = None
+	try:
+		if not order_id:
+			frappe.throw("Medusa order id is required.")
+		existing = frappe.db.get_value(
+			"Medusa Intake Log", {"medusa_order_id": order_id, "outcome": "Created"}, "pick_task"
+		)
+		if existing:
+			_log_medusa_intake(
+				order_id,
+				"Duplicate",
+				"Replay of an already-created order.",
+				existing,
+				frappe.db.get_value("Pick Task", existing, "customer"),
+				payload,
+				order_number,
+			)
+			return {"name": existing, "route": _route("Pick Task", existing), "duplicate": True}
+
+		parsed_items = json.loads(items) if isinstance(items, str) else items
+		if not parsed_items:
+			frappe.throw("Medusa order had no items.")
+		parsed = []
+		for line in parsed_items:
+			sku = (line.get("sku") or "").strip()
+			qty = flt(line.get("quantity"))
+			if not sku:
+				frappe.throw(f"Medusa order {order_id} sent a line with no SKU.")
+			if not frappe.db.exists("Item", sku):
+				frappe.throw(
+					f"Medusa SKU '{sku}' has no matching ERPNext Item Code (order {order_id}). "
+					"Phase 1 requires an exact 1:1 match - fix the SKU on the Medusa variant, "
+					"do not auto-create the item."
+				)
+			if qty <= 0:
+				frappe.throw(f"Medusa SKU '{sku}' had a non-positive quantity.")
+			parsed.append({"item_code": sku, "quantity": qty})
+
+		# Each line comes from the bin that actually holds it (most available first), not one fixed
+		# bin: a task can span bins, and stock sits wherever it was put away.
+		customer = _order_tenant([line["item_code"] for line in parsed])
+		storage_zone = _storage_group(customer)
+		for line in parsed:
+			line["warehouse"] = _best_pick_bin(line["item_code"], line["quantity"], storage_zone) or _zone_warehouse(
+				"Storage", company=customer
+			)
+		result = create_pick_task(customer=customer, items=json.dumps(parsed))
+		frappe.db.set_value(
+			"Pick Task",
+			result["name"],
+			{"medusa_order_id": order_id, "medusa_order_number": order_number},
+			update_modified=False,
+		)
+		_log_medusa_intake(order_id, "Created", None, result["name"], customer, payload, order_number)
+		frappe.logger("soypaq.medusa").info(f"Created {result['name']} from Medusa order {order_id}")
+		return result
+	except Exception as exc:
+		# A throw rolls the request back, which would erase the audit row too - undo the
+		# partial work first, then commit only the log entry.
+		frappe.db.rollback()
+		_log_medusa_intake(
+			order_id or None, "Rejected", str(exc)[:1000], None, customer, payload, order_number
+		)
+		frappe.db.commit()
+		raise
 
 
 @frappe.whitelist()
@@ -2822,6 +3369,71 @@ def adjust_bin_qty(
 	}
 
 
+def _storage_group(company: str) -> str | None:
+	"""The tenant's Storage zone (group warehouse) that new bins hang under."""
+	return frappe.db.get_value(
+		"Warehouse",
+		{"company": company, "is_group": 1, "warehouse_name": ["like", "% - Storage"]},
+		"name",
+	)
+
+
+def _next_bin_code(parent: str) -> str:
+	"""Next default code under a Storage zone: keeps the highest existing letter, counts up, zero-padded (A06 -> A07)."""
+	best = ("A", 0)
+	for name in frappe.get_all("Warehouse", filters={"parent_warehouse": parent, "is_group": 0}, pluck="warehouse_name"):
+		match = re.search(r"- ([A-Za-z]+)(\d+)$", name or "")
+		if match and (match.group(1).upper(), int(match.group(2))) > best:
+			best = (match.group(1).upper(), int(match.group(2)))
+	return f"{best[0]}{best[1] + 1:02d}"
+
+
+@frappe.whitelist()
+def new_bin_options(customer: str | None = None) -> dict:
+	"""Customers that can own a bin, plus the default next code for the chosen one."""
+	customers = []
+	for name in frappe.get_all("Customer", filters={"disabled": 0}, pluck="name", order_by="name"):
+		# 3PL convention (AGENT.md): a tenant's Customer and Company share a name.
+		if frappe.db.exists("Company", name) and _storage_group(name):
+			customers.append(name)
+	customer = customer if customer in customers else (customers[0] if customers else None)
+	return {
+		"customers": customers,
+		"customer": customer,
+		"code": _next_bin_code(_storage_group(customer)) if customer else "",
+	}
+
+
+@frappe.whitelist()
+def create_bin(customer: str, code: str | None = None) -> dict:
+	"""Create a storage bin (leaf Warehouse) for a customer under their Storage zone.
+
+	Name follows the existing schema `<Customer> - Storage - <code> - <abbr>`; when no code is given
+	the next free one is used (A07 after A06). Refuses a code that already exists for the tenant.
+	"""
+	customer = (customer or "").strip()
+	if not customer or not frappe.db.exists("Customer", customer):
+		frappe.throw("Choose the customer this bin belongs to.")
+	parent = frappe.db.exists("Company", customer) and _storage_group(customer)
+	if not parent:
+		frappe.throw(f"{customer} has no Storage zone to add a bin to.")
+	code = re.sub(r"\s+", "", code or "").upper() or _next_bin_code(parent)
+	if not re.fullmatch(r"[A-Z]+\d{1,3}", code):
+		frappe.throw("A bin code is a letter and a number, like A07.")
+	code = re.sub(r"^([A-Z]+)(\d+)$", lambda m: f"{m.group(1)}{m.group(2).zfill(2)}", code)
+	zone_name = frappe.db.get_value("Warehouse", parent, "warehouse_name")
+	if frappe.db.exists("Warehouse", {"warehouse_name": f"{zone_name} - {code}", "company": customer}):
+		frappe.throw(f"Bin {code} already exists for {customer}.")
+	doc = frappe.new_doc("Warehouse")
+	doc.warehouse_name = f"{zone_name} - {code}"
+	doc.company = customer
+	doc.parent_warehouse = parent
+	doc.is_group = 0
+	doc.flags.ignore_permissions = True
+	doc.insert()
+	return {"name": doc.name, "code": code, "customer": customer}
+
+
 @frappe.whitelist()
 def move_bin_stock(
 	item_code: str, from_warehouse: str, to_warehouse: str, quantity: float, reason_code: str, notes: str = ""
@@ -2848,7 +3460,7 @@ def move_bin_stock(
 	# Operators scan a short bin label ("A1"), not the full internal warehouse name.
 	# _resolve_bin accepts either, and already rejects group warehouses.
 	from_warehouse = _resolve_bin(from_warehouse)
-	to_warehouse = _resolve_bin(to_warehouse)
+	to_warehouse = _resolve_bin(to_warehouse, company=frappe.db.get_value("Warehouse", from_warehouse, "company"))
 	if from_warehouse == to_warehouse:
 		frappe.throw("Source and destination bins cannot be the same.")
 	for wh in [from_warehouse, to_warehouse]:

@@ -60,9 +60,10 @@ add_to_apps_screen = [
 # home_page = "login"
 
 # website user home page (by Role)
-# role_home_page = {
-# 	"Role": "home_page"
-# }
+# Dedicated landing page per role on sign-on (least surprise, least access).
+role_home_page = {
+	"Warehouse Operator": "soypaq-wms",
+}
 
 # Generators
 # ----------
@@ -87,6 +88,7 @@ add_to_apps_screen = [
 
 # before_install = "soypaq.install.before_install"
 after_install = "soypaq.install.after_install"
+after_migrate = ["soypaq.install.after_migrate"]
 
 # Uninstallation
 # ------------
@@ -145,6 +147,15 @@ after_install = "soypaq.install.after_install"
 # 		"on_trash": "method"
 # 	}
 # }
+
+doc_events = {
+	"Customer": {"on_update": "soypaq.onboarding.on_customer_save"},
+	"Journal Entry": {
+		"on_submit": "soypaq.billing.sync_log_status",
+		"on_cancel": "soypaq.billing.sync_log_status",
+		"on_trash": "soypaq.billing.sync_log_status",
+	}
+}
 
 # Scheduled Tasks
 # ---------------
@@ -205,7 +216,9 @@ after_install = "soypaq.install.after_install"
 
 # Request Events
 # ----------------
-# before_request = ["soypaq.utils.before_request"]
+# auth_hooks run after API-key/token auth resolves the user; before_request runs too early
+# (user is still Guest), which let token callers skip the WMS role check.
+auth_hooks = ["soypaq.security.guard_wms_api"]
 # after_request = ["soypaq.utils.after_request"]
 
 # Job Events

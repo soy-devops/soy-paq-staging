@@ -1,0 +1,161 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-21 00:00:00.000000",
+ "custom": 0,
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "company_section",
+  "default_company",
+  "customer_section",
+  "customer_mode",
+  "default_customer",
+  "billing_section",
+  "enable_task_billing",
+  "billing_start",
+  "pick_fee",
+  "billing_company",
+  "billing_receivable_account",
+  "billing_income_account",
+  "billing_cost_center",
+  "version_section",
+  "app_version",
+  "portal_version",
+  "recent_changes"
+ ],
+ "fields": [
+  {
+   "fieldname": "company_section",
+   "fieldtype": "Section Break",
+   "label": "Company"
+  },
+  {
+   "fieldname": "default_company",
+   "fieldtype": "Link",
+   "label": "Default Company",
+   "options": "Company",
+   "description": "Company that owns the SoyPaq warehouses. Leave blank to keep the built-in fallback."
+  },
+  {
+   "fieldname": "customer_section",
+   "fieldtype": "Section Break",
+   "label": "Customer"
+  },
+  {
+   "fieldname": "customer_mode",
+   "fieldtype": "Select",
+   "label": "Customer Mode",
+   "options": "Default\nManual",
+   "default": "Default",
+   "description": "Default: tasks created without a customer use the Default Customer. Manual: every task must name its customer."
+  },
+  {
+   "fieldname": "default_customer",
+   "fieldtype": "Link",
+   "label": "Default Customer",
+   "options": "Customer",
+   "depends_on": "eval:doc.customer_mode!='Manual'"
+  },
+  {
+   "fieldname": "billing_section",
+   "fieldtype": "Section Break",
+   "label": "Fulfilment Billing"
+  },
+  {
+   "fieldname": "enable_task_billing",
+   "fieldtype": "Check",
+   "label": "Bill Each Completed Pick Task",
+   "description": "Raises one draft Journal Entry (Dr Receivable, Cr Fulfilment Revenue) per pick task when it completes. Interim until Medusa pick-ship invoicing."
+  },
+  {
+   "fieldname": "billing_start",
+   "fieldtype": "Datetime",
+   "label": "Bill Tasks Completed After",
+   "read_only": 1,
+   "description": "Set automatically when billing is first enabled. Earlier tasks are never billed."
+  },
+  {
+   "fieldname": "pick_fee",
+   "fieldtype": "Currency",
+   "label": "Fee per Pick Task",
+   "default": "7"
+  },
+  {
+   "fieldname": "billing_company",
+   "fieldtype": "Link",
+   "label": "Billing Company",
+   "options": "Company",
+   "description": "Company that books the invoice (the 3PL, not the tenant)."
+  },
+  {
+   "fieldname": "billing_receivable_account",
+   "fieldtype": "Link",
+   "label": "Receivable Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "billing_income_account",
+   "fieldtype": "Link",
+   "label": "Fulfilment Revenue Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "billing_cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "version_section",
+   "fieldtype": "Section Break",
+   "label": "Version"
+  },
+  {
+   "fieldname": "app_version",
+   "fieldtype": "Data",
+   "label": "SoyPaq WMS Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "portal_version",
+   "fieldtype": "Data",
+   "label": "Soy Portal Version",
+   "read_only": 1,
+   "description": "Tracked separately from the SoyPaq version."
+  },
+  {
+   "fieldname": "recent_changes",
+   "fieldtype": "Small Text",
+   "label": "Recent Changes",
+   "read_only": 1,
+   "description": "Latest entries from CHANGELOG.md. Read only."
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-25 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SoyPaq",
+ "name": "SoyPaq Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Warehouse Operator"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

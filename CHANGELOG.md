@@ -6,6 +6,271 @@ The current version is shown in the app under Settings → App version.
 Convention: bump `APP_VERSION` / `APP_BUILD_DATE` in `apps/soypaq/ui/src/App.vue` on every change set that
 reaches a running site (local or prod), and log it here with Backend/Frontend split.
 
+## Unreleased - 2026-09-26
+
+**Customer Onboarding desk workspace.** Run `bench migrate` (new standard workspace, patch `add_onboarding_workspace`). No version bump; no WMS UI change.
+
+**Backend**
+- New `Customer Onboarding` workspace at `/desk/customer-onboarding` (System Manager, Stock Manager, Accounts Manager). Number cards: 3PL Clients, Clients Awaiting Setup. "New Client" opens the Customer form with group 3PL Client prefilled, which triggers automatic onboarding. Link cards group the follow-up doctypes: contact and address, warehouse and items, staff and portal access (User, User Permission), storefront and billing.
+
+**Frontend**
+- None.
+
+## v0.11.7 - 2026-09-26
+
+**Live Inventory filters: Company replaces Drop, filters collapse.** Patch bump (`APP_VERSION`/`__version__` 0.11.7, cache-buster `0.11.7`). Restart the backend; no migrate needed.
+
+**Backend**
+- Inventory items carry `company` (company of the warehouse holding most of the stock; blank if unassigned).
+
+**Frontend**
+- Bins and Items filters are now Company, Color, Size (Company leftmost). The Drop filter is removed; the drop is still matched by search.
+- The filter row is collapsed behind a "Filters" bar that shows how many filters are active, and expands on tap.
+
+**Walkthrough (local)**: Company lists the two tenants; choosing the second tenant leaves only its bin and item; badge shows 1.
+
+## v0.11.6 - 2026-09-26
+
+**Second-tenant Medusa routing and tenant-safe bin codes.** Patch bump (`APP_VERSION`/`__version__` 0.11.6, cache-buster `0.11.6`). Restart the backend; no migrate needed. Full walkthrough saved in `tests/runs/2026-09-26-tenant-2.md`.
+
+**Backend**
+- Medusa intake routes each order to a tenant by its SKUs: the tenant group in the item's item-group ancestry, limited to the customers the bridge user has User Permissions for (the boundary is unchanged). A SKU no permitted tenant owns, or a cart mixing tenants, is rejected and logged. A bridge with one tenant behaves as before. `sync_stock_to_medusa` mirrors every permitted tenant's warehouses.
+- Fix: a short bin code (`A01`) exists for every customer and used to resolve to whichever bin the database returned first. Now it resolves inside the customer in context (task customer, source bin's company); with none, it reports the ambiguity and asks for the full bin name.
+- Duplicate intake rows record the task's customer.
+
+**Frontend**: version bump only.
+
+**Walkthrough (local)**: second tenant onboarded, one item stocked, storefront order #14 routed to it, picked and packed in WMS, draft billing entry logged with the Medusa reference; mixed-tenant order rejected. Ship not run.
+
+## v0.11.5 - 2026-09-26
+
+**Automatic tenant onboarding.** Patch bump (`APP_VERSION`/`__version__` 0.11.5, cache-buster `0.11.5`). Run `bench migrate`.
+
+**Backend**
+- Saving a Customer in the **3PL Client** group now sets up its tenant in the background (`soypaq/onboarding.py`), laid out like the first tenant: a Company of the same name (unique abbreviation from the initials, currency and country copied from the billing company), a root warehouse group with Receiving, PickPack, Returns, Damaged, a Storage group and first bin `A01`, plus an item group for its product-type groups. An "Item Code Prefix" (first three consonants, unique) is suggested. Idempotent and locked against overlapping saves; a failure is logged and noted on the Customer.
+- New Customer fields: Item Code Prefix, Tenant Onboarded (read-only). Existing 3PL Clients that are already set up are marked onboarded by patch `add_tenant_onboarding`; the first tenant's prefix is HMN.
+- The customer then appears in WMS "+ New bin" with the next free code (A02 after A01).
+
+**Frontend**: none.
+
+**Walkthrough (local)**: created a test customer through the Desk form; onboarding finished in the background with one activity note, the customer showed in the New bin options with code A02. Test tenant then deleted; company, account, warehouse, customer and item-group counts back to the starting values, no GL entries.
+
+## v0.11.4 - 2026-09-26
+
+**Item groups mean product type; New bin links to New customer.** Patch bump (`APP_VERSION`/`__version__` 0.11.4, cache-buster `0.11.4`). Run `bench migrate`.
+
+**Backend**
+- Patch `normalize_item_groups`: items in a season-style group (`Summer_2026`) move to a product-type group under their tenant group (`Example Client` > `Example Client - Tees`); the season is kept in the Collection trait. Applies to all 50 items including the disabled ones. Item codes, bins and stock are untouched. Product type comes from the product name (Tees, Shirts, Shorts, Pants, Sweatshirts, else Apparel), so future imports land in a sensible group.
+- Traits backfill also reads color from the item code (`BLK`, `WHT`, `PNK`, `BLU`, `RED`) when the name has none.
+- The Portal's Category column and category share now show the product type instead of the season.
+
+**Frontend**
+- New bin sheet: "Customer not listed? + New customer" opens Desk's New Customer form. Inventory search also matches the item group.
+
+**Walkthrough (local)**: 50 items regrouped under `Example Client - Tees` with Collection "Summer 2026"; on hand 486, ledger 37; New bin sheet shows the customer link. Old `Summer_2026` group left in place, now empty. Medusa test orders #12 and #13 cancelled in Medusa.
+
+## v0.11.3 - 2026-09-26
+
+**Medusa order reference carried through ERP, and Medusa intake picks from the bin that has the stock.** Patch bump (`APP_VERSION`/`__version__` 0.11.3, cache-buster `0.11.3`). Run `bench migrate`.
+
+**Backend**
+- `Pick Task` gains `medusa_order_number` and `medusa_order_id` (read-only, "Medusa Source"). `create_order_from_medusa` takes the new optional `display_id` (the customer-facing order number), stamps both on the task, and records the number on `Medusa Intake Log` (new `medusa_order_number`).
+- Pick/Pack/Shipment previews and the pick screen context now show the Medusa order (`Medusa #13`) as the source instead of "Manually created - no source order linked". Pack and Shipment follow the lineage back to the pick. No lines are compared for Medusa sources (integrity status `external`).
+- Audit trail: the billing journal entry remark and line remarks read `Order PICK-MIA-##### - Medusa #13 (order_...)`, and `Pick Billing Log` has a searchable `source_reference` column.
+- Fix: Medusa intake used one fixed bin for every item, so an item stocked elsewhere was rejected ("Only 0 units ... in ... A01"). Each line now goes to the Storage bin with the most available stock that covers it (`_best_pick_bin`); a task can span bins.
+
+**Frontend**
+- Task drawer and pick screen label the source `Medusa` instead of `PO`; the pick screen keeps the task name as its title for Medusa orders.
+
+**Medusa (soyshop-local)**: `subscribers/order-placed.ts` now sends `display_id` with the order id.
+
+**Walkthrough (local)**: storefront order placed, ERP task created with Medusa #13 in `A06`, picker drawer showed the Medusa order, completed pick wrote log and draft entry carrying the Medusa reference, packer view showed Medusa #13. Test data removed; on hand 486, ledger 37.
+
+## v0.11.2 - 2026-09-26
+
+**Pick Billing Log: one tracking row per completed pick task.** Minor-patch bump (`APP_VERSION`/`__version__` 0.11.2, cache-buster `0.11.2`). Run `bench migrate`.
+
+**Backend**
+- New read-only doctype `Pick Billing Log` (`/app/pick-billing-log`): pick task, customer, completed at, outcome (Created / Skipped / Failed), reason, journal entry, entry status (Draft / Submitted / Cancelled / Deleted), amount. Logging only; nothing edits it. Visible to System Manager and Accounts roles.
+- `soypaq/billing.py` writes a row for every completion: Created (with the entry), Skipped (billing off, completed before billing started, no customer, zero fee) or Failed (error text). A task that already has an entry is not logged twice.
+- Journal Entry `on_submit` / `on_cancel` / `on_trash` doc events keep the log's entry status current.
+
+**Frontend**: none.
+
+**Walkthrough (local)**: billing off gave a Skipped row; billing on gave Created with a draft entry (7.00); submit then cancel moved the status Draft, Submitted, Cancelled. Desk icons intact after migrate. Test data removed; on hand 486.
+
+## v0.11.1 - 2026-09-26
+
+**Bin shown per line in the task drawer.** Patch bump (`APP_VERSION`/`__version__` 0.11.1, cache-buster `0.11.1`).
+
+**Frontend**
+- Task drawer contents show each line's bin next to its SKU (`HMN-AFG-BLACK-L · Bin A02`).
+
+**Walkthrough (local, bug pass)**: item in two bins (6 in A02, 4 in A05): switching bin in the line sheet clamps quantity to the new bin's availability, and + disables at the cap. One task across two bins: locked until each bin is confirmed (item scan, short code `A02`, or wrong bin rejected); short/exception flag and cancel work on multi-bin tasks; over-pick rejected. New bin from the Move bin sheet fills the destination and the move posts. Duplicate/invalid bin codes and customers without a Storage zone are rejected. `apply_medusa_products` stamps traits and reports unknown SKUs. Automated tests pass on the test site (21 run, 8 skipped for lack of stock data). Test data removed; inventory on hand 486. Known and held: "available" does not yet count completed-but-unshipped picks.
+
+## v0.11.0 - 2026-09-25
+
+**Per-task fulfilment billing, New bin, and item traits.** Minor bump (`APP_VERSION`/`__version__` 0.11.0, cache-buster `0.11.0`). Run `bench migrate` on every site.
+
+**Backend**
+- `soypaq/billing.py`: completing a Pick Task raises one **draft** Journal Entry (Dr Receivable / Cr Fulfilment Revenue, customer as party on both lines, cost center, `Order <task>` in the cheque reference and remark), matching the hand-made entries. Interim until Medusa pick-ship invoicing.
+- `SoyPaq Settings` "Fulfilment Billing": enable switch, fee per task (default 7), billing company, receivable and revenue accounts, cost center. `billing_start` is stamped when billing is first enabled, so earlier tasks are never billed.
+- `Pick Task.billing_journal_entry` (permlevel 1, System Manager only) makes billing idempotent and keeps the link away from warehouse users. A billing error is logged and never blocks the pick.
+- `new_bin_options` / `create_bin`: create a storage bin for a chosen customer under its Storage zone; default code is the next free one (A07 after A06).
+- Item traits (`soypaq/traits.py`, patch `add_item_traits`, re-asserted on install/migrate): Item fields `soy_product`, `soy_color`, `soy_size`, `soy_collection`, backfilled from item names and the old season group. `apply_medusa_products` stamps them from Medusa products (variant SKU = Item Code; option Color/Size; collection title).
+- Inventory payload carries product/color/size/collection per item.
+
+**Frontend**
+- Inventory > Bins: "+ New bin" sheet (customer dropdown, code prefilled). Also reachable from an item's Move bin sheet, which fills the destination.
+- Inventory: Color / Size / Drop filters, and search also matches traits.
+
+**Walkthrough (local)**: completed a test pick, got one draft entry (7.00, both lines with party and cost center); created and removed bin A07; Pink + XL filter returned 1 item. Inventory unchanged: on hand 486, stock ledger entries 31.
+
+## v0.10.2 - 2026-09-24
+
+**Desk icons now survive `bench migrate`.** Patch bump (`APP_VERSION`/`__version__` 0.10.2, cache-buster `0.10.2`).
+
+**Backend**
+- `bench migrate` re-syncs Desktop Icons and dropped SoyPaq WMS from /desk (seen after the v0.10.0 migrate). New `after_migrate` hook (`soypaq.install.after_migrate`) re-asserts it through the existing idempotent setter on every migrate. The earlier once-only patch could not cover this. Confirmed by running migrate on the local site: the icon is present afterwards.
+
+**Frontend**
+- Version string only.
+
+## v0.10.1 - 2026-09-24
+
+**Pick screen lands on the route; builder quantities stop at what is left.** Patch bump (`APP_VERSION`/`__version__` 0.10.1, cache-buster `0.10.1`).
+
+**Backend**
+- `confirm_pick_location` on a single-bin task now also marks its rows `bin_confirmed`, so every task reports bin confirmation the same way. The single-bin gate itself is unchanged.
+
+**Frontend**
+- Removed the "Scan location first" screen. Opening a pick lands straight on the route. A bin is confirmed by scanning the bin code (full name or short code such as `A01`) into the scan field, by scanning an item in it (a scan proves presence), or by "I'm here" for tapping. All three confirm on the server; +/- stay disabled until the bin is confirmed. The scan field and camera button now read "item or bin barcode".
+- Builder: a line can never exceed what is available in its bin. + on the line and in the sheet disables at the limit, further scans show "No more X left in <bin>", a bin change is refused for a bin with none available, and quantity is clamped when the bin changes. In the bin's "tap to add" list an item reads "0 left" and loses its + and click once none is left; an item with none available cannot be added at all.
+
+**Verified (local, 2026-09-24):** scanned one item 9 times: stopped at 6 of 6 with "0 left" and no + in the bin list; opened the new task: no location screen, + disabled until a bin scan confirmed A01, then an item scan picked. Test task cancelled from the drawer; stock and commitments back to the earlier snapshot (on hand 486, stock ledger entries 31).
+
+## v0.10.0 - 2026-09-24
+
+**One Pick Task can span several bins.** Minor bump (`APP_VERSION`/`__version__` 0.10.0, cache-buster `0.10.0`). Adds a field: run `bench migrate` on every site.
+
+**Backend**
+- `Pick Task Item` gets `bin_confirmed` (Check, read-only). Each row already carried its own `source_bin`.
+- `create_pick_task` now always creates one task. Each line has its own bin (line `warehouse`, else the argument, else the default Storage zone); repeats of an item in the same bin merge, the same item in two bins is rejected (a task holds an item in one bin), bins must belong to one company, and availability is checked per bin before anything is created. Rows are ordered by bin. The header `warehouse`/`scan_bin` is the first bin. Returns `name`/`route` plus a one-entry `tasks` list (`warehouses` lists the bins).
+- `confirm_pick_location` on a multi-bin task accepts any of its bins (full name or short code such as `A02`), unlocks only that bin's rows, and moves `scan_bin` to the next bin still to confirm. Single-bin tasks keep the original task-level gate unchanged.
+- `pick_item`, `unpick_item` and `flag_pick_item` require the row's own bin to be confirmed on a multi-bin task ("Confirm bin X first"). `pick_all` confirms every bin. Pack and Ship rows already carried per-row bins, so the Pack Task from a multi-bin pick keeps them (checked).
+- Tests in `tests/test_pick_builder.py` (skip on sites without stock in two bins).
+
+**Frontend**
+- Builder sheet: one card headed by the (previewed) pick task name and its bin count, bins as sub-headings inside it; footer "Create pick task - N items - N units"; toast shows the real name.
+- Pick screen: on a multi-bin task "I'm here" and item scans now confirm the bin on the server (rows carry `bin_confirmed`), so state survives a reload and other operators see it. Single-bin tasks unchanged.
+- Known: the task drawer's contents list does not show each line's bin yet.
+
+**Walkthrough (local site, 2026-09-24):** Before: on hand 486, open pick commitments 6, Pick Tasks 29, Pack Tasks 12, Stock Ledger Entries 31. Created one task over bins A01/A02/A04 (3 items, 4 units); confirmed A01 at the gate, "I'm here" on A02 (server), an item scan on A04 (implicit confirm); picked all, completed, Send to Pack: the Pack Task carried all three bins. After: on hand 486, Stock Ledger Entries 31 (stock still moves only at ship), Pick Tasks 30, Pack Tasks 13 (test records; the completed pick's Pick Action rows block deletion).
+
+## v0.9.4 - 2026-09-24
+
+**Pick builder: live count moves into the bin list.** Patch bump (`APP_VERSION`/`__version__` 0.9.4, cache-buster `0.9.4`).
+
+**Backend**
+- None.
+
+**Frontend**
+- The live quantity now lives in the scanned bin's "tap to add" list: an item reads "N available" until it is in the sheet from that bin, then "N left" (available minus the quantity chosen with - / +). Lines under a pick task no longer show a count; they show the item code, plus a red "only N available" when over.
+
+## v0.9.3 - 2026-09-24
+
+**Pick builder polish from warehouse feedback.** Patch bump (`APP_VERSION`/`__version__` 0.9.3, cache-buster `0.9.3`).
+
+**Backend**
+- New `preview_pick_task_names(count)`: the next Pick Task names from the naming series, so the builder can label each pending task. A preview only; the real name is assigned on insert and `create_pick_task` returns it (another operator creating a task in between can shift the number). Naming series is now the `PICK_NAMING_SERIES` constant.
+
+**Frontend**
+- Builder sheet: the pick task list now sits above the scan box.
+- Each pending task is headed by its pick task name (`PICK-MIA-#####`, previewed) with the bin as secondary text, instead of the bin name. The success toast lists the real names.
+- Each line shows a live "N left" (available minus the quantity in the sheet); over-available still shows "only N available" in red.
+- Removed "Start pick task with this item" from Live Inventory item detail. A pick can now be started only from the Pick screen (New Pick Task) or Inventory > Bins > "Start pick from this bin".
+- The scan field refocuses without scrolling the sheet.
+
+**Verified (local, 2026-09-24):** previewed names PICK-MIA-00034/00035 matched the created tasks; item detail has no start-pick button; test tasks deleted, stock and commitments back to the pre-test snapshot.
+
+## v0.9.2 - 2026-09-24
+
+**Warehouse-reported: "New Pick Task" has no scan. Scan-first pick builder, steps 1-3 of 5 (Pick screen and both Inventory entry points).** Patch bump. `APP_VERSION`/`__version__` 0.9.2; asset cache-buster in `www/soypaq-wms.html` is `0.9.2b` (a second build shipped under the same version).
+
+**Backend**
+- New `resolve_scan(code, warehouse=None)`: resolves one scanned or typed code to an item (Item Barcode, then item code) with every bin holding stock and its available quantity, or to a bin (full name, warehouse name, or short code such as `A1`/`A01`) with the items in it. Available is on hand minus what open Pick Tasks already intend to take, the same figure `create_pick_task` enforces. An unknown code returns `resolved: false`, not an error.
+- `_parse_manual_items` now accepts a barcode as well as an item code, so every create route (`create_pick_task`, `create_inbound_asn`, `create_pack_task`, `create_shipment_task`) takes scanned values. Lines may also carry an optional `warehouse`.
+- `create_pick_task` creates one Pick Task per bin: lines are grouped by their own bin (else the `warehouse` argument, else the default Storage zone), repeat lines for the same item and bin are merged, and availability is checked for every bin before anything is created, so it creates all tasks or none. Returns the first task as `name`/`route` (unchanged for existing callers) plus `tasks`. A Pick Task stays single-bin, so the pick flow is untouched.
+- Tests: `tests/test_pick_builder.py`.
+
+**Frontend**
+- Pick screen "New Pick Task" is now a scan-first builder sheet (Pack, Ship and Receive keep the old form until step 4). The scan field is always focused; Enter (handheld scanners) or the camera button, which follows the existing WMS pattern of one decode per open, adds the item or does +1 on its line, with vibration/beep feedback honouring the Settings toggles. An unknown code shows a toast and keeps focus.
+- Lines are grouped by bin (one task per bin) and default to the bin already in the sheet. Scanning a bin code lists its items to tap. Tapping a line opens a second sheet to set the quantity, change the bin (with available quantities), or remove it. A line over the available quantity turns red and blocks Create.
+- Footer reads "Create N pick tasks - N items - N units".
+- Customer and Warehouse boxes are gone from this sheet: the customer is inferred from the bin's company, as before.
+- Cache-buster in `www/soypaq-wms.html` bumped (it was stale at 0.8.6).
+- Step 3: "Start pick from this bin" and "Start pick task with this item" (Inventory) now open the same builder, pre-seeded: a bin lists its items (new "Add all" adds each at its available quantity), an item is added at qty 1 in its best-stocked bin. The old quantity and checkbox sheets and their state are removed.
+- Builder sheets are `position: fixed` (`.wms-fixed`) so they open in the viewport when launched from a scrolled Inventory list; the shared overlay sits at the bottom of the whole page.
+- Known gap (unchanged): Live Inventory "Available" is on hand minus ERPNext `Bin.reserved_qty`, so it does not subtract open Pick Task commitments; the builder's "available" does.
+- Still to do: Pack/Ship/Receive on the scan-first sheet (step 4), barcode resolution on the Pick and Pack scan screens (step 5).
+
+**Walkthrough (local site, 2026-09-24)**
+- Before: Bin on hand 486 units (20 stocked bins), Live Inventory on hand 486, open pick commitments 6, Pick Tasks 28, Pack Tasks 12, Stock Ledger Entries 31.
+- Created via bin entry (A01, Add all: 4 items, 61 units), item entry (+ scan into a second bin: 2 tasks) and confirmed each in Pick > Open. Open commitments 6 -> 68 (61 + 1, plus 2 picked and completed).
+- Picked one task end to end (confirm bin, two scans, complete, Send to Pack). On hand stayed 486 and Stock Ledger Entries 31: stock only moves at ship, as designed.
+- After cleanup: on hand 486, commitments 6, Stock Ledger Entries 31, Inventory Actions 2. One completed test task (its three Pick Action audit rows block deletion) was left in place.
+
+## v0.9.1 - 2026-09-20
+
+**Medusa intake hardening: scoped bridge user, tenant-scoped stock mirror, idempotent orders, audit log, and a Send-to-Pack fix.** Patch bump.
+
+**Backend**
+- Fixed `complete_pick`: `skip_downstream` arrives over HTTP as the string `"0"`, which is truthy, so every "Send to Pack" silently took the bypass path (auto-completed Pack/Ship, no label). Now coerced with `cint()`.
+- `create_order_from_medusa` runs as a scoped machine user (site config `medusa_bridge_user`, default `svc-medusa-bridge@soy-ops.com`) instead of Administrator, so roles and User Permissions apply. The tenant Customer comes from that user's single Customer User Permission; the payload `customer_name` is ignored, and the Pick Task warehouse is resolved inside the tenant's Company.
+- Idempotent: a Medusa order id already logged as Created returns the existing Pick Task (`duplicate: true`) instead of creating a second one.
+- New doctype `Medusa Intake Log` (Created / Duplicate / Rejected, reason, acting user, payload), viewable as a Desk report. Rejections are committed even though the request rolls back. Requests failing the shared-secret check are not logged, by design.
+- `sync_stock_to_medusa` only mirrors Bins in warehouses of the tenant's Company, and returns the tenant name.
+- `EasyShipProvider` and `easyship_client.py`: sandbox/live host chosen from the API key prefix (`sand_`); items nested under `parcels`; courier read from `courier_service`.
+- Provisioning (manual, per tenant): Customer and Company User Permissions on the bridge user (RUNBOOK Step 1.5). Run `bench migrate` for the new doctype.
+
+**Frontend**
+- WMS: `APP_VERSION` bumped to 0.9.1 (UI bundle needs a rebuild to show it).
+- Storefront (Medusa repo): Address Line 2 field added and Phone made required in checkout; `setAddresses()` no longer drops `address_2`.
+
+**Docs / Medusa side (soyshop-local, branch `feat/portal-ui-rebridge`)**
+- Admin UI served at `/dashboard` (not `/app`); README and RUNBOOK URLs corrected; `docs/LOCAL_DEV_INFO.txt` added.
+- Medusa catalog reconciled to ERPNext: 4 starter demo products and their stale inventory removed; live catalog is 5 products / 20 variants, stock levels match ERPNext.
+- `docs/API_MAP.md`: per-tenant API map, provisioning checklist, and the control-plane decision (ERPNext/SoyPaq receives webhooks and pulls APIs; the UI is a thin client; no extra layer).
+- `docs/PORTAL_UI_COMPAT.md`: compatibility review of the React portal prototype (blockers: direct Medusa admin calls, exposed AI key, no ERPNext login).
+
+**Known limits**
+- Two simultaneous webhooks for the same order id could both create a Pick Task (no locking).
+- No Sales Order / Invoice / Payment yet; no tracking push-back to Medusa; stock sync is manual.
+
+## Unreleased - 2026-09-21
+
+**SoyPaq Settings, minimal Medusa Bridge role, Soy Ops workspace.** Not yet version-bumped or committed.
+
+**Backend**
+- New single doctype `SoyPaq Settings`: `default_company`, `customer_mode` (Default or Manual), `default_customer`. `_default_warehouse()` and `_resolve_customer()` read it first and fall back to the old built-in constants when it is blank, so existing behaviour is unchanged until it is filled in.
+- New role `Medusa Bridge` (patch `add_medusa_bridge_role`): Pick Task read/write/create, read on Item, Warehouse, Bin, Customer, Company. Replaces the broader Sales User, Stock User and Warehouse Operator roles on the bridge user. Tenant scope still comes from the bridge user's User Permissions.
+- `Medusa Intake Log` gains `event` and `direction` fields.
+- New standard workspace `Soy Ops` (`soypaq/workspace/soy_ops`) plus four Number Cards (patch `add_soy_ops_workspace`).
+
+**Frontend**
+- Desk workspace `Soy Ops`: KPI cards (open sales orders, open pick tasks, ready to ship, rejected Medusa orders) and shortcuts into existing doctypes, shown per role.
+
+## v0.9.0 - 2026-09-20
+
+**Shipping provider layer and access-control groundwork.** Minor bump.
+
+**Backend**
+- New `security.py` (`guard_wms_api`, wired via `auth_hooks`): a non-warehouse role hitting a WMS API method or the WMS page is rejected; `tests/test_wms_access.py` covers both.
+- Shipping provider layer (`shipping_providers.py`, `easyship_client.py`) and `medusa_client.py` added.
+
+**Frontend**
+- WMS: `APP_VERSION` bumped to 0.9.0.
+
 ## v0.8.6 - 2026-09-13
 
 **Bypass path now pushes real stock, not a dead end.**

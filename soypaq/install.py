@@ -10,6 +10,18 @@ def after_install():
 	brand new site therefore has to live here, not in a patch.
 	"""
 	setup_desktop_icon()
+	setup_item_traits()
+
+
+def after_migrate():
+	"""Re-assert the desktop icon after every `bench migrate`.
+
+	Migrate re-syncs Desktop Icons and drops the ones no app ships as standard, which
+	would remove SoyPaq WMS from /desk. A patch runs once, so it cannot cover the next
+	migrate; this hook can. Idempotent.
+	"""
+	setup_desktop_icon()
+	setup_item_traits()
 
 
 def setup_desktop_icon():
@@ -38,3 +50,11 @@ def setup_desktop_icon():
 			ignore_permissions=True
 		)
 	clear_desktop_icons_cache()
+
+
+def setup_item_traits():
+	"""Item Product/Color/Size/Collection fields; fresh installs skip patches, so assert them here too."""
+	from soypaq import onboarding, traits
+
+	traits.ensure_fields()
+	onboarding.ensure_fields()

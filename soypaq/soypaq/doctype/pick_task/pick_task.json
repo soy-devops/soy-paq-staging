@@ -41,7 +41,12 @@
   "column_break_qxza",
   "total_items",
   "total_picked_qty",
-  "total_required_qty"
+  "total_required_qty",
+  "billing_section",
+  "billing_journal_entry",
+  "medusa_section",
+  "medusa_order_number",
+  "medusa_order_id"
  ],
  "fields": [
   {
@@ -233,12 +238,49 @@
    "fieldname": "total_required_qty",
    "fieldtype": "Float",
    "label": "Total Required Qty"
+  },
+  {
+   "fieldname": "billing_section",
+   "fieldtype": "Section Break",
+   "label": "Billing",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "billing_journal_entry",
+   "fieldtype": "Link",
+   "label": "Billing Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "no_copy": 1,
+   "permlevel": 1,
+   "description": "Draft fulfilment-fee journal entry raised when this task completed. Finance only."
+  },
+  {
+   "fieldname": "medusa_section",
+   "fieldtype": "Section Break",
+   "label": "Medusa Source"
+  },
+  {
+   "fieldname": "medusa_order_number",
+   "fieldtype": "Data",
+   "label": "Medusa Order #",
+   "read_only": 1,
+   "no_copy": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "medusa_order_id",
+   "fieldtype": "Data",
+   "label": "Medusa Order ID",
+   "read_only": 1,
+   "no_copy": 1,
+   "search_index": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-23 17:13:18.523697",
+ "modified": "2026-09-26 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "SoyPaq",
  "name": "Pick Task",
@@ -255,6 +297,12 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "System Manager",
+   "permlevel": 1,
    "write": 1
   }
  ],
