@@ -22,7 +22,6 @@
   "billing_cost_center",
   "version_section",
   "app_version",
-  "portal_version",
   "recent_changes"
  ],
  "fields": [
@@ -117,13 +116,6 @@
    "fieldtype": "Data",
    "label": "SoyPaq WMS Version",
    "read_only": 1
-  },
-  {
-   "fieldname": "portal_version",
-   "fieldtype": "Data",
-   "label": "Soy Portal Version",
-   "read_only": 1,
-   "description": "Tracked separately from the SoyPaq version."
   },
   {
    "fieldname": "recent_changes",
