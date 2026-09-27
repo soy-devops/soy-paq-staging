@@ -8,3 +8,9 @@ soypaq.patches.remove_legacy_custom_fields
 soypaq.patches.add_soypaq_wms_desktop_icon
 soypaq.patches.add_wms_tracking_fields
 soypaq.patches.add_shippo_label_fields
+soypaq.patches.add_medusa_bridge_role
+soypaq.patches.add_soy_ops_workspace
+soypaq.patches.add_item_traits
+soypaq.patches.normalize_item_groups
+soypaq.patches.add_tenant_onboarding
+soypaq.patches.add_onboarding_workspace
