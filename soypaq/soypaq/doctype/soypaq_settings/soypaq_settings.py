@@ -29,7 +29,9 @@ class SoyPaqSettings(Document):
 		# just because someone toggles it off and on again without a gap in billing intent.
 		if self.enable_task_billing:
 			if not (self.billing_company and self.billing_receivable_account and self.billing_income_account):
-				frappe.throw("Set the billing company, receivable account and revenue account before enabling billing.")
+				frappe.throw(
+					"Set the billing company, receivable account and revenue account before enabling billing."
+				)
 			if not self.billing_start:
 				self.billing_start = now_datetime()
 		else:

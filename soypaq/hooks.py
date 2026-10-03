@@ -150,7 +150,7 @@ doc_events = {
 		"on_submit": "soypaq.billing.sync_log_status",
 		"on_cancel": "soypaq.billing.sync_log_status",
 		"on_trash": "soypaq.billing.sync_log_status",
-	}
+	},
 }
 
 # Scheduled Tasks

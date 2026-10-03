@@ -4,7 +4,14 @@ import frappe
 
 CARDS = [
 	# label, doctype, filters
-	("Open Sales Orders", "Sales Order", [["Sales Order", "docstatus", "=", 1], ["Sales Order", "status", "in", ["To Deliver and Bill", "To Bill", "To Deliver"]]]),
+	(
+		"Open Sales Orders",
+		"Sales Order",
+		[
+			["Sales Order", "docstatus", "=", 1],
+			["Sales Order", "status", "in", ["To Deliver and Bill", "To Bill", "To Deliver"]],
+		],
+	),
 	("Open Pick Tasks", "Pick Task", [["Pick Task", "status", "in", ["Pending", "Picking"]]]),
 	("Ready to Ship", "Shipment Task", [["Shipment Task", "status", "=", "Ready to Ship"]]),
 	("Rejected Medusa Orders", "Medusa Intake Log", [["Medusa Intake Log", "outcome", "=", "Rejected"]]),

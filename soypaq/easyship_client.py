@@ -190,14 +190,18 @@ def buy_cheapest_label(
 	# The label endpoint takes the courier choice itself (2024-09 has no PATCH-then-/labels step;
 	# both were rejected 2026-10-02: ShipmentUpdate has no courier field, POST /labels is 404).
 	# A 403 "complete identity verification" here is an account state, not a code fault.
-	label = _request("POST", f"/shipments/{shipment_id}/label", json={"courier_service_id": courier_service_id})
+	label = _request(
+		"POST", f"/shipments/{shipment_id}/label", json={"courier_service_id": courier_service_id}
+	)
 	labelled = label.get("shipment") or label
 	if labelled.get("label_state") in ("failed", "not_created"):
 		frappe.throw(f"EasyShip could not generate a label: {labelled.get('label_state')}")
 
 	trackings = labelled.get("trackings") or []
 	documents = [
-		doc for doc in (labelled.get("shipping_documents") or []) if doc.get("category") == "label" and doc.get("url")
+		doc
+		for doc in (labelled.get("shipping_documents") or [])
+		if doc.get("category") == "label" and doc.get("url")
 	]
 	return {
 		"tracking_number": (trackings[0].get("tracking_number") if trackings else "")

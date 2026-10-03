@@ -23,7 +23,10 @@ export default defineConfig({
     rollupOptions: {
       output: {
         entryFileNames: 'soypaq-wms.js',
-        assetFileNames: 'soypaq-wms.[ext]',
+        // Fonts keep their own names: with one fixed name for every asset, the two fonts
+        // came out as soypaq-wms/soypaq-wms2 in a different order on each build.
+        assetFileNames: (info) =>
+          /\.woff2?$/.test(info.names?.[0] ?? info.name ?? '') ? 'fonts/[name][extname]' : 'soypaq-wms.[ext]',
       },
     },
   },

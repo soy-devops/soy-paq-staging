@@ -5,10 +5,10 @@ import re
 from urllib.parse import quote
 
 import frappe
-from soypaq.billing import bill_completed_pick
 from frappe.utils import cint, flt, now_datetime
 
 from soypaq import medusa_client
+from soypaq.billing import bill_completed_pick
 
 MOBILE_DOCTYPES = {
 	"Inbound ASN",
@@ -516,7 +516,9 @@ def _create_stock_entry(entry_type: str, items: list[dict], company: str | None 
 		}
 		# Received stock is the client's, not Soy's: an item with no cost yet (a new item, price 0 by
 		# default) is received at zero value instead of blocking the receipt. Same rule as adjust_bin_qty.
-		if entry_type == "Material Receipt" and not flt(frappe.db.get_value("Item", item["item_code"], "valuation_rate")):
+		if entry_type == "Material Receipt" and not flt(
+			frappe.db.get_value("Item", item["item_code"], "valuation_rate")
+		):
 			row["allow_zero_valuation_rate"] = 1
 		doc.append("items", row)
 	doc.insert()
@@ -578,7 +580,9 @@ def _suffix_bin(code: str, company: str | None = None) -> str | None:
 	matches = frappe.get_all("Warehouse", filters=filters, pluck="name")
 	if len(matches) > 1:
 		companies = ", ".join(sorted({frappe.db.get_value("Warehouse", m, "company") for m in matches}))
-		frappe.throw(f"Bin {code} exists for several customers ({companies}). Scan or type the full bin name.")
+		frappe.throw(
+			f"Bin {code} exists for several customers ({companies}). Scan or type the full bin name."
+		)
 	return matches[0] if matches else None
 
 
@@ -606,9 +610,9 @@ def _resolve_bin(code: str, company: str | None = None) -> str:
 		padded = re.sub(r"^([A-Za-z]+)(\d+)$", lambda m: f"{m.group(1)}{m.group(2).zfill(2)}", code)
 		unpadded = re.sub(r"^([A-Za-z]+)0*(\d+)$", r"\1\2", code)
 		for variant in {padded, unpadded} - {code}:
-			name = frappe.db.get_value(
-				"Warehouse", {"warehouse_name": variant}, "name"
-			) or _suffix_bin(variant, company)
+			name = frappe.db.get_value("Warehouse", {"warehouse_name": variant}, "name") or _suffix_bin(
+				variant, company
+			)
 			if name:
 				break
 	if not name:
@@ -841,7 +845,10 @@ def _medusa_context(doc) -> dict:
 		return {}
 	number = pick.get("medusa_order_number")
 	intake = frappe.db.get_value(
-		"Medusa Intake Log", {"medusa_order_id": order_id, "outcome": "Created"}, ["name", "creation"], as_dict=True
+		"Medusa Intake Log",
+		{"medusa_order_id": order_id, "outcome": "Created"},
+		["name", "creation"],
+		as_dict=True,
 	)
 	return {
 		"doctype": "Medusa order",
@@ -943,7 +950,18 @@ def _inventory_snapshot() -> dict:
 	items = frappe.get_all(
 		"Item",
 		filters={"is_stock_item": 1, "disabled": 0},
-		fields=["name", "item_name", "item_group", "stock_uom", "image", "modified", "soy_product", "soy_color", "soy_size", "soy_collection"],
+		fields=[
+			"name",
+			"item_name",
+			"item_group",
+			"stock_uom",
+			"image",
+			"modified",
+			"soy_product",
+			"soy_color",
+			"soy_size",
+			"soy_collection",
+		],
 		order_by="item_name asc",
 		limit_page_length=500,
 	)
@@ -1160,7 +1178,9 @@ def _other_active_claim(user: str, exclude_doctype: str, exclude_name: str) -> d
 		rows = frappe.get_all(
 			doctype,
 			filters={field: user, "status": ["not in", done_statuses]},
-			fields=["name", "sales_order"] if doctype != "Inbound Package" else ["name", "external_tracking_number"],
+			fields=["name", "sales_order"]
+			if doctype != "Inbound Package"
+			else ["name", "external_tracking_number"],
 			limit_page_length=2,
 		)
 		for row in rows:
@@ -1762,7 +1782,11 @@ def get_mobile_bootstrap(
 			"carrier": shipment_task.get("carrier") if shipment_task else "",
 			"tracking_number": shipment_task.get("tracking_number") if shipment_task else "",
 			"label_url": shipment_task.get("shipping_label_url") if shipment_task else "",
-			**(_ship_form(shipment_task) if shipment_task else {"ship_to": {}, "ship_to_source": "", "parcel": {}}),
+			**(
+				_ship_form(shipment_task)
+				if shipment_task
+				else {"ship_to": {}, "ship_to_source": "", "parcel": {}}
+			),
 			"name": shipment_task.name if shipment_task else "",
 			"customer": shipment_task.get("customer") if shipment_task else "",
 			"reference": (shipment_task.get("sales_order") or shipment_task.name) if shipment_task else "",
@@ -1871,7 +1895,9 @@ def start_receiving_session(customer: str, target_warehouse: str = None, trackin
 	# matches nothing on a real site.
 	# The client's own Receiving zone (tenant Company shares the Customer's name); never another client's.
 	tenant_company = customer if frappe.db.exists("Company", customer) else None
-	target_warehouse = (target_warehouse or "").strip() or _zone_warehouse("Receiving", company=tenant_company)
+	target_warehouse = (target_warehouse or "").strip() or _zone_warehouse(
+		"Receiving", company=tenant_company
+	)
 	if not target_warehouse:
 		frappe.throw(
 			f"{customer} has no Receiving warehouse yet. Finish its setup, or create a "
@@ -1931,7 +1957,9 @@ def resolve_scan(code: str, warehouse: str = None) -> dict:
 		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "image"], as_dict=True)
 		locations = []
 		for row in frappe.get_all(
-			"Bin", filters={"item_code": item_code, "actual_qty": [">", 0]}, fields=["warehouse", "actual_qty"]
+			"Bin",
+			filters={"item_code": item_code, "actual_qty": [">", 0]},
+			fields=["warehouse", "actual_qty"],
 		):
 			committed = _open_pick_reserved_qty(item_code, row.warehouse)
 			locations.append(
@@ -1968,7 +1996,9 @@ def resolve_scan(code: str, warehouse: str = None) -> dict:
 	for row in frappe.get_all(
 		"Bin", filters={"warehouse": bin_name, "actual_qty": [">", 0]}, fields=["item_code", "actual_qty"]
 	):
-		info = frappe.db.get_value("Item", row.item_code, ["item_name", "stock_uom", "image", "disabled"], as_dict=True)
+		info = frappe.db.get_value(
+			"Item", row.item_code, ["item_name", "stock_uom", "image", "disabled"], as_dict=True
+		)
 		if not info or info.disabled:
 			continue
 		committed = _open_pick_reserved_qty(row.item_code, bin_name)
@@ -2013,7 +2043,9 @@ def receive_scan(package_name: str, code: str, quantity: float = 1) -> dict:
 	# another client's item into this client's package.
 	owner = _item_client(item_code)
 	if owner and doc.get("customer") and owner != doc.get("customer"):
-		frappe.throw(f"{code} is {owner}'s item ({item_code}), but this package is for {doc.get('customer')}.")
+		frappe.throw(
+			f"{code} is {owner}'s item ({item_code}), but this package is for {doc.get('customer')}."
+		)
 
 	result = receive_item(doc.name, item_code, quantity)
 	result["resolved"] = True
@@ -2070,7 +2102,11 @@ def _name_template(customer: str | None) -> str:
 
 
 def _render_item_name(template: str, product: str, color: str, size: str) -> str:
-	name = template.replace("{PRODUCT}", product or "").replace("{COLOR}", color or "").replace("{SIZE}", size or "")
+	name = (
+		template.replace("{PRODUCT}", product or "")
+		.replace("{COLOR}", color or "")
+		.replace("{SIZE}", size or "")
+	)
 	return re.sub(r"\s+", " ", name).strip().upper()
 
 
@@ -2118,7 +2154,11 @@ def receive_item_suggestion(package_name: str, code: str) -> dict:
 		key=lambda s: (SIZE_ORDER.index(s) if s in SIZE_ORDER else 99, s),
 	)
 	# Offer product types only: not the holding group, nor a leftover season group (Summer_2026).
-	groups = [g for g in _client_groups(customer) if not g.endswith(" - Unsorted") and not re.fullmatch(r"[A-Za-z]+_\d{4}", g)]
+	groups = [
+		g
+		for g in _client_groups(customer)
+		if not g.endswith(" - Unsorted") and not re.fullmatch(r"[A-Za-z]+_\d{4}", g)
+	]
 	prefill = {"product": "", "color": "", "size": "", "group": "", "collection": ""}
 	related, position = _related_item(code, items)
 	if related:
@@ -2182,7 +2222,11 @@ def receive_new_item(
 	customer = doc.get("customer")
 	groups = _client_groups(customer)
 	group = item_group if item_group in groups else _unsorted_item_group(customer)
-	missing = [label for label, value in (("type", item_group in groups), ("color", color), ("size", size)) if not value]
+	missing = [
+		label
+		for label, value in (("type", item_group in groups), ("color", color), ("size", size))
+		if not value
+	]
 	needs_review = cint(flag) or bool(missing)
 
 	item = frappe.new_doc("Item")
@@ -2207,7 +2251,12 @@ def receive_new_item(
 
 	result = receive_item(doc.name, item.name, quantity)
 	result.update(
-		{"resolved": True, "created": item.name, "item_name": item.item_name, "needs_review": bool(needs_review)}
+		{
+			"resolved": True,
+			"created": item.name,
+			"item_name": item.item_name,
+			"needs_review": bool(needs_review),
+		}
 	)
 	return result
 
@@ -2768,9 +2817,11 @@ def confirm_pick_location(task_name: str, location_code: str) -> dict:
 		for row in doc.get("pick_items") or []:
 			if _row_bin(row) == match:
 				row.bin_confirmed = 1
-		pending = [b for b in bins if not all(
-			cint(r.get("bin_confirmed")) for r in doc.get("pick_items") or [] if _row_bin(r) == b
-		)]
+		pending = [
+			b
+			for b in bins
+			if not all(cint(r.get("bin_confirmed")) for r in doc.get("pick_items") or [] if _row_bin(r) == b)
+		]
 		doc.scan_bin = pending[0] if pending else match
 		location_code = match
 	else:
@@ -3287,7 +3338,18 @@ def _writable_shipment(task_name: str):
 	return doc
 
 
-_SHIP_TO_KEYS = ("name", "company", "line_1", "line_2", "city", "state", "postal_code", "country", "phone", "email")
+_SHIP_TO_KEYS = (
+	"name",
+	"company",
+	"line_1",
+	"line_2",
+	"city",
+	"state",
+	"postal_code",
+	"country",
+	"phone",
+	"email",
+)
 _PARCEL_KEYS = ("weight_kg", "length_cm", "width_cm", "height_cm")
 
 
@@ -3486,7 +3548,9 @@ def _medusa_tenant() -> str:
 	"""The bridge's tenant when it serves exactly one; several means the caller must route by SKU."""
 	customers = _medusa_tenants()
 	if len(customers) != 1:
-		frappe.throw(f"{_bridge_user()} serves {len(customers)} tenants; route the order by its SKUs instead.")
+		frappe.throw(
+			f"{_bridge_user()} serves {len(customers)} tenants; route the order by its SKUs instead."
+		)
 	return customers[0]
 
 
@@ -3509,7 +3573,9 @@ def _order_tenant(skus: list[str]) -> str:
 		frappe.throw(f"SKU {', '.join(missing)} does not belong to a tenant this Medusa bridge serves.")
 	distinct = sorted(set(owners.values()))
 	if len(distinct) > 1:
-		frappe.throw(f"Order mixes tenants ({', '.join(distinct)}); each tenant's items must be a separate order.")
+		frappe.throw(
+			f"Order mixes tenants ({', '.join(distinct)}); each tenant's items must be a separate order."
+		)
 	return distinct[0]
 
 
@@ -3682,9 +3748,9 @@ def create_order_from_medusa(
 		customer = _order_tenant([line["item_code"] for line in parsed])
 		storage_zone = _storage_group(customer)
 		for line in parsed:
-			line["warehouse"] = _best_pick_bin(line["item_code"], line["quantity"], storage_zone) or _zone_warehouse(
-				"Storage", company=customer
-			)
+			line["warehouse"] = _best_pick_bin(
+				line["item_code"], line["quantity"], storage_zone
+			) or _zone_warehouse("Storage", company=customer)
 		result = create_pick_task(customer=customer, items=json.dumps(parsed))
 		frappe.db.set_value(
 			"Pick Task",
@@ -3824,7 +3890,9 @@ def _storage_group(company: str) -> str | None:
 def _next_bin_code(parent: str) -> str:
 	"""Next default code under a Storage zone: keeps the highest existing letter, counts up, zero-padded (A06 -> A07)."""
 	best = ("A", 0)
-	for name in frappe.get_all("Warehouse", filters={"parent_warehouse": parent, "is_group": 0}, pluck="warehouse_name"):
+	for name in frappe.get_all(
+		"Warehouse", filters={"parent_warehouse": parent, "is_group": 0}, pluck="warehouse_name"
+	):
 		match = re.search(r"- ([A-Za-z]+)(\d+)$", name or "")
 		if match and (match.group(1).upper(), int(match.group(2))) > best:
 			best = (match.group(1).upper(), int(match.group(2)))
@@ -3878,7 +3946,10 @@ def client_bins(customer: str | None = None, item_codes=None, near_warehouse: st
 	stock = {}
 	if warehouses:
 		for row in frappe.get_all(
-			"Bin", filters={"warehouse": ["in", warehouses]}, fields=["warehouse", "item_code", "actual_qty"], limit_page_length=0
+			"Bin",
+			filters={"warehouse": ["in", warehouses]},
+			fields=["warehouse", "item_code", "actual_qty"],
+			limit_page_length=0,
 		):
 			entry = stock.setdefault(row.warehouse, {"on_hand": 0, "held": {}})
 			entry["on_hand"] += flt(row.actual_qty)
@@ -3902,7 +3973,9 @@ def create_client(customer_name: str) -> dict:
 	customer_name = re.sub(r"\s+", " ", customer_name or "").strip()
 	if len(customer_name) < 2:
 		frappe.throw("Enter the client's name.")
-	if frappe.db.exists("Customer", {"customer_name": customer_name}) or frappe.db.exists("Customer", customer_name):
+	if frappe.db.exists("Customer", {"customer_name": customer_name}) or frappe.db.exists(
+		"Customer", customer_name
+	):
 		frappe.throw(f"A client named {customer_name} already exists.")
 	if frappe.db.exists("Company", customer_name):
 		frappe.throw(f"A company named {customer_name} already exists.")
@@ -3989,7 +4062,9 @@ def move_bin_stock(
 	# Operators scan a short bin label ("A1"), not the full internal warehouse name.
 	# _resolve_bin accepts either, and already rejects group warehouses.
 	from_warehouse = _resolve_bin(from_warehouse)
-	to_warehouse = _resolve_bin(to_warehouse, company=frappe.db.get_value("Warehouse", from_warehouse, "company"))
+	to_warehouse = _resolve_bin(
+		to_warehouse, company=frappe.db.get_value("Warehouse", from_warehouse, "company")
+	)
 	if from_warehouse == to_warehouse:
 		frappe.throw("Source and destination bins cannot be the same.")
 	for wh in [from_warehouse, to_warehouse]:

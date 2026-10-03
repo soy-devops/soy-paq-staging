@@ -13,7 +13,14 @@ TRAIT_FIELDS = {
 	"soy_collection": "Collection",
 }
 ACRONYMS = {"AFG"}
-COLOR_CODES = {"BLK": "Black", "WHT": "White", "PNK": "Pink", "BLU": "Blue", "RED": "Red", "BLKWHT": "Black/White"}
+COLOR_CODES = {
+	"BLK": "Black",
+	"WHT": "White",
+	"PNK": "Pink",
+	"BLU": "Blue",
+	"RED": "Red",
+	"BLKWHT": "Black/White",
+}
 TYPE_KEYWORDS = (
 	("SWEATSHIRT", "Sweatshirts"),
 	("HOODIE", "Sweatshirts"),
@@ -30,7 +37,12 @@ def ensure_fields() -> None:
 	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 	fields = [
-		{"fieldname": "soy_traits_section", "fieldtype": "Section Break", "label": "Product Traits", "insert_after": "item_group"}
+		{
+			"fieldname": "soy_traits_section",
+			"fieldtype": "Section Break",
+			"label": "Product Traits",
+			"insert_after": "item_group",
+		}
 	]
 	previous = "soy_traits_section"
 	for fieldname, label in TRAIT_FIELDS.items():
@@ -92,7 +104,9 @@ def ensure_fields() -> None:
 
 def _title(text: str) -> str:
 	"""Title-case, but keep vowel-less acronyms (AFG, NYC, STL) upper."""
-	return " ".join(w if w.upper() in ACRONYMS or not re.search(r"[AEIOUaeiou]", w) else w.title() for w in text.split())
+	return " ".join(
+		w if w.upper() in ACRONYMS or not re.search(r"[AEIOUaeiou]", w) else w.title() for w in text.split()
+	)
 
 
 def parse_name(item_name: str) -> dict:
@@ -131,7 +145,9 @@ def normalize_item_groups() -> int:
 	items still sitting in a group named like <Word>_<year>. Stock, bins and item codes are untouched.
 	"""
 	moved = 0
-	for item in frappe.get_all("Item", fields=["name", "item_name", "item_group", "soy_product", "soy_collection"]):
+	for item in frappe.get_all(
+		"Item", fields=["name", "item_name", "item_group", "soy_product", "soy_collection"]
+	):
 		if not re.fullmatch(r"[A-Za-z]+_\d{4}", item.item_group or ""):
 			continue
 		tenant = frappe.db.get_value("Item Group", item.item_group, "parent_item_group")
@@ -140,7 +156,12 @@ def normalize_item_groups() -> int:
 		group = f"{tenant} - {product_type(item.soy_product or item.item_name)}"
 		if not frappe.db.exists("Item Group", group):
 			frappe.get_doc(
-				{"doctype": "Item Group", "item_group_name": group, "parent_item_group": tenant, "is_group": 0}
+				{
+					"doctype": "Item Group",
+					"item_group_name": group,
+					"parent_item_group": tenant,
+					"is_group": 0,
+				}
 			).insert(ignore_permissions=True)
 		update = {"item_group": group}
 		if not item.soy_collection:
@@ -153,9 +174,11 @@ def normalize_item_groups() -> int:
 def backfill() -> int:
 	"""Fill empty traits from the item name and the old season group. Never overwrites a value."""
 	count = 0
-	for item in frappe.get_all("Item", fields=["name", "item_name", "item_group"] + list(TRAIT_FIELDS)):
+	for item in frappe.get_all("Item", fields=["name", "item_name", "item_group", *list(TRAIT_FIELDS)]):
 		guess = parse_name(item.item_name)
-		guess["soy_collection"] = re.sub(r"_", " ", item.item_group or "") if re.search(r"\d{4}", item.item_group or "") else ""
+		guess["soy_collection"] = (
+			re.sub(r"_", " ", item.item_group or "") if re.search(r"\d{4}", item.item_group or "") else ""
+		)
 		if not guess["soy_color"]:
 			guess["soy_color"] = color_from_code(item.name)
 		update = {k: v for k, v in guess.items() if v and not item.get(k)}

@@ -78,7 +78,9 @@ def suggest_prefix(name: str) -> str:
 	letters = re.sub(r"[^A-Z]", "", name.upper())
 	consonants = "".join(c for c in letters if c not in "AEIOU")
 	base = (consonants + letters)[:3] or "TNT"
-	taken = set(frappe.get_all("Customer", filters={"soy_item_prefix": ["is", "set"]}, pluck="soy_item_prefix"))
+	taken = set(
+		frappe.get_all("Customer", filters={"soy_item_prefix": ["is", "set"]}, pluck="soy_item_prefix")
+	)
 	candidate, n = base, 1
 	while candidate in taken:
 		n += 1
@@ -105,8 +107,13 @@ def onboard_tenant(customer: str) -> dict:
 	cust = frappe.get_doc("Customer", customer)
 	made = []
 	if not frappe.db.exists("Company", customer):
-		reference = frappe.db.get_single_value("SoyPaq Settings", "billing_company") or frappe.db.get_value("Company", {}, "name")
-		soy = (reference and frappe.db.get_value("Company", reference, ["default_currency", "country"], as_dict=True)) or {}
+		reference = frappe.db.get_single_value("SoyPaq Settings", "billing_company") or frappe.db.get_value(
+			"Company", {}, "name"
+		)
+		soy = (
+			reference
+			and frappe.db.get_value("Company", reference, ["default_currency", "country"], as_dict=True)
+		) or {}
 		company = frappe.new_doc("Company")
 		company.company_name = customer
 		company.abbr = _abbr(customer)
@@ -128,7 +135,12 @@ def onboard_tenant(customer: str) -> dict:
 
 	if not frappe.db.exists("Item Group", customer):
 		frappe.get_doc(
-			{"doctype": "Item Group", "item_group_name": customer, "parent_item_group": "All Item Groups", "is_group": 1}
+			{
+				"doctype": "Item Group",
+				"item_group_name": customer,
+				"parent_item_group": "All Item Groups",
+				"is_group": 1,
+			}
 		).insert(ignore_permissions=True)
 		made.append("Item group")
 
@@ -137,7 +149,9 @@ def onboard_tenant(customer: str) -> dict:
 		updates["soy_item_prefix"] = suggest_prefix(customer)
 		made.append(f"Item prefix {updates['soy_item_prefix']}")
 	frappe.db.set_value("Customer", customer, updates, update_modified=False)
-	cust.add_comment("Info", "SoyPaq tenant onboarded: " + "; ".join(made) if made else "SoyPaq tenant already set up.")
+	cust.add_comment(
+		"Info", "SoyPaq tenant onboarded: " + "; ".join(made) if made else "SoyPaq tenant already set up."
+	)
 	return {"customer": customer, "created": made}
 
 
@@ -155,7 +169,9 @@ def _run(customer: str) -> None:
 		frappe.db.rollback()
 		frappe.log_error(title=f"Tenant onboarding failed for {customer}")
 		try:
-			frappe.get_doc("Customer", customer).add_comment("Info", "SoyPaq tenant onboarding failed - see Error Log.")
+			frappe.get_doc("Customer", customer).add_comment(
+				"Info", "SoyPaq tenant onboarding failed - see Error Log."
+			)
 			frappe.db.commit()
 		except Exception:
 			pass
@@ -166,5 +182,10 @@ def on_customer_save(doc, method=None) -> None:
 	if doc.get("customer_group") != TENANT_GROUP or doc.get("soy_onboarded"):
 		return
 	frappe.enqueue(
-		"soypaq.onboarding._run", customer=doc.name, queue="short", enqueue_after_commit=True, job_id=f"tenant-onboard-{doc.name}", deduplicate=True
+		"soypaq.onboarding._run",
+		customer=doc.name,
+		queue="short",
+		enqueue_after_commit=True,
+		job_id=f"tenant-onboard-{doc.name}",
+		deduplicate=True,
 	)

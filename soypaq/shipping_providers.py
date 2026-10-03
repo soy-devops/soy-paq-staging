@@ -94,7 +94,6 @@ def get_provider() -> ShippingProvider:
 	provider_cls = _PROVIDERS.get(provider_name)
 	if not provider_cls:
 		frappe.throw(
-			f"Unknown shipping_provider '{provider_name}' in site config. "
-			f"Available: {', '.join(_PROVIDERS)}."
+			f"Unknown shipping_provider '{provider_name}' in site config. Available: {', '.join(_PROVIDERS)}."
 		)
 	return provider_cls()

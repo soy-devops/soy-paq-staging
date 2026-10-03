@@ -12,7 +12,9 @@ def execute():
 	Idempotent."""
 	traits.ensure_fields()
 	frappe.clear_cache(doctype="Item")
-	for item in frappe.get_all("Item", filters={"item_group": "Provisional - Needs Review", "soy_needs_review": 0}, pluck="name"):
+	for item in frappe.get_all(
+		"Item", filters={"item_group": "Provisional - Needs Review", "soy_needs_review": 0}, pluck="name"
+	):
 		frappe.db.set_value(
 			"Item",
 			item,

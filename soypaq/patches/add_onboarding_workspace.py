@@ -4,7 +4,10 @@ import frappe
 
 CARDS = [
 	("3PL Clients", [["Customer", "customer_group", "=", "3PL Client"]]),
-	("Clients Awaiting Setup", [["Customer", "customer_group", "=", "3PL Client"], ["Customer", "soy_onboarded", "=", 0]]),
+	(
+		"Clients Awaiting Setup",
+		[["Customer", "customer_group", "=", "3PL Client"], ["Customer", "soy_onboarded", "=", 0]],
+	),
 ]
 
 

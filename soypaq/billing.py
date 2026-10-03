@@ -17,7 +17,9 @@ def _source_reference(pick_task) -> str:
 	return f"Medusa #{number} ({order_id})" if number and order_id else f"Medusa {number or order_id}"
 
 
-def _log(pick_task, outcome: str, reason: str = "", journal_entry: str | None = None, amount: float = 0) -> None:
+def _log(
+	pick_task, outcome: str, reason: str = "", journal_entry: str | None = None, amount: float = 0
+) -> None:
 	"""One Pick Billing Log row per completion attempt (logging only; never blocks the pick)."""
 	frappe.get_doc(
 		{
@@ -40,12 +42,18 @@ def sync_log_status(doc, method=None) -> None:
 	status = {"on_submit": "Submitted", "on_cancel": "Cancelled", "on_trash": "Deleted"}.get(method)
 	if status:
 		frappe.db.set_value(
-			"Pick Billing Log", {"journal_entry": doc.name}, "journal_entry_status", status, update_modified=False
+			"Pick Billing Log",
+			{"journal_entry": doc.name},
+			"journal_entry_status",
+			status,
+			update_modified=False,
 		)
+
 
 def _skip(pick_task, reason: str) -> None:
 	_log(pick_task, "Skipped", reason=reason)
 	return None
+
 
 def create_task_journal_entry(pick_task) -> str | None:
 	"""Create the draft JE for a just-completed Pick Task and log the outcome; return the JE name or None."""
@@ -71,7 +79,9 @@ def create_task_journal_entry(pick_task) -> str | None:
 	posting_date = getdate(completed_at)
 	reference = f"Order {pick_task.name}"
 	source = _source_reference(pick_task)
-	remark = f"Reference #{reference} dated {posting_date.strftime('%m-%d-%Y')}" + (f" - {source}" if source else "")
+	remark = f"Reference #{reference} dated {posting_date.strftime('%m-%d-%Y')}" + (
+		f" - {source}" if source else ""
+	)
 
 	je = frappe.new_doc("Journal Entry")
 	je.voucher_type = "Journal Entry"
