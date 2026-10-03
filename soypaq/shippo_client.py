@@ -1,16 +1,10 @@
 """Thin wrapper around the Shippo SDK for buying a shipping label.
 
-Addresses and parcel dimensions are not tracked everywhere in this app yet, so
-this intentionally uses public example placeholders until a site provides real
-shipment data:
-  - DEFAULT_ADDRESS_FROM / DEFAULT_ADDRESS_TO: non-secret example address data.
-  - DEFAULT_PARCEL: one standard box preset used for every shipment.
-Swap these for site-specific Address/Item data before buying production labels.
-
-TODO(manual-entry): let the warehouse worker type the real ship-to name/address,
-weight/dimensions, and carrier preference on the Ship screen before generating a
-label. generate_shipment_label() in api.py should accept those as optional params
-and pass them through to buy_cheapest_label() instead of relying on these defaults.
+The ship-to address and parcel come from the Ship screen (prefilled from the order
+when the source sent one), translated here by address_from_ship_to / parcel_from_form.
+The DEFAULT_* values below are public example placeholders, used only when a caller
+passes nothing. DEFAULT_ADDRESS_FROM (the sender) is still a placeholder: set the
+real warehouse address before buying production labels.
 """
 
 import os
@@ -47,6 +41,39 @@ DEFAULT_PARCEL = {
 	"weight": "2",
 	"mass_unit": "lb",
 }
+
+
+def address_from_ship_to(ship_to: dict | None) -> dict | None:
+	"""Neutral ship-to dict -> Shippo AddressCreateRequest fields (None keeps the default)."""
+	if not ship_to:
+		return None
+	address = {
+		"name": ship_to.get("name"),
+		"company": ship_to.get("company") or "",
+		"street1": ship_to.get("line_1"),
+		"street2": ship_to.get("line_2") or "",
+		"city": ship_to.get("city"),
+		"state": ship_to.get("state") or "",
+		"zip": ship_to.get("postal_code"),
+		"country": ship_to.get("country"),
+		"phone": ship_to.get("phone") or "",
+		"email": ship_to.get("email") or "",
+	}
+	return {key: value for key, value in address.items() if value}
+
+
+def parcel_from_form(parcel: dict | None) -> dict | None:
+	"""Neutral parcel dict (kg / cm) -> Shippo ParcelCreateRequest fields."""
+	if not parcel:
+		return None
+	return {
+		"length": str(parcel["length_cm"]),
+		"width": str(parcel["width_cm"]),
+		"height": str(parcel["height_cm"]),
+		"distance_unit": "cm",
+		"weight": str(parcel["weight_kg"]),
+		"mass_unit": "kg",
+	}
 
 
 def _api_key() -> str:

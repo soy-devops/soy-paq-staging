@@ -513,7 +513,7 @@ doesn't accept short bin codes like `A03`. Worth aligning the two at some point.
 
 4. **Split `apps/soypaq` into its own Git repository** — the remaining blocker for a Frappe Cloud
    deploy. Everything else for a clean cloud install is done and verified.
-5. **Manual ship-to entry at label time** — worker types real ship-to, weight/dimensions and
+5. ~~**Manual ship-to entry at label time**~~ — **shipped in v0.11.8** (ship-to and parcel form on the Ship screen, Medusa prefill plumbing; carrier is still the site default; label generation is paused). Original note:  worker types real ship-to, weight/dimensions and
    carrier on the Ship screen just before "Generate shipping label", instead of routing through
    Sales Order/Address records. Replaces `shippo_client.py`'s `DEFAULT_ADDRESS_TO`/`DEFAULT_PARCEL`
    placeholders — see the `TODO(manual-entry)` comment. `DEFAULT_ADDRESS_FROM` is real; its
@@ -525,7 +525,7 @@ doesn't accept short bin codes like `A03`. Worth aligning the two at some point.
    blind receiving). Planning stage, nothing built.
 7. **Claim timeout** — auto-release a stale claim after inactivity (manual release already works;
    needs a scheduled job).
-8. **Receive claiming** — Inbound Package has no assignment field, so Receive can't show in
+8. ~~**Receive claiming**~~ — **shipped in v0.11.9** (Inbound Package now has a claim, Cancel and Active-tab support). Original note:  Inbound Package has no assignment field, so Receive can't show in
    "Active" with a named claimant like the other three stages.
 9. **Bottom-nav highlighting during active work** — "My tasks" stays lit for list views but not
    inside the working/scanning screen (`pickMode === 'active'`).
@@ -565,4 +565,4 @@ Facts about this dev box that aren't obvious from the code:
 
 ## Current version
 
-**v0.7.1** — see `CHANGELOG.md` for the full shipped history.
+**v0.12.0** — see `CHANGELOG.md` for the full shipped history.

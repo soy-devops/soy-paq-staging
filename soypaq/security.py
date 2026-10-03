@@ -40,3 +40,15 @@ def guard_wms_api() -> None:
 	if frappe.session.user == "Guest":
 		return
 	require_wms_access()
+
+
+def medusa_intake_log_query_conditions(user: str | None = None) -> str:
+	"""permission_query_condition: a blank `customer` means the intake couldn't be routed to a
+	tenant (ambiguous SKU, bridge-level reject). Frappe's automatic User Permission filtering only
+	restricts rows where the link field has a value, so a blank customer would otherwise be visible
+	to every role that can read the doctype, including a future tenant-scoped role. Restrict those
+	rows to System Manager until the row has a customer."""
+	user = user or frappe.session.user
+	if "System Manager" in frappe.get_roles(user):
+		return ""
+	return "`tabMedusa Intake Log`.customer is not null and `tabMedusa Intake Log`.customer != ''"

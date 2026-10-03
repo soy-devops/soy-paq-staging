@@ -192,3 +192,15 @@ body { background: #f7f7f7; }
   background: #ffffff;
   padding-bottom: env(safe-area-inset-bottom);
 }
+/* Sheets opened from a long, scrolled screen (Inventory bins) must sit in the viewport, not at the page
+   bottom: the default overlay is absolute over the whole scrolling main. Column width matches the app. */
+.wms-create-overlay.wms-fixed {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  right: auto;
+  width: 100%;
+  max-width: 400px;
+  transform: translateX(-50%);
+}

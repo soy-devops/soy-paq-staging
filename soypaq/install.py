@@ -58,3 +58,9 @@ def setup_item_traits():
 
 	traits.ensure_fields()
 	onboarding.ensure_fields()
+	# The Desk workspaces ship as files, but their KPI cards are records, and fresh installs skip patches.
+	from soypaq.patches import add_item_review_flag, add_onboarding_workspace, add_soy_ops_workspace
+
+	add_soy_ops_workspace.execute()
+	add_onboarding_workspace.execute()
+	add_item_review_flag.execute()

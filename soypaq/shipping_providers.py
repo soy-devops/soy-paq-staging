@@ -5,7 +5,7 @@ directly, so a future EasyShip/UPS/etc. integration is a new class here, not a
 rewrite of api.py. Provider is chosen by the `shipping_provider` site config key
 (default "manual") - "manual" never calls an external carrier or spends real
 money, which is what WMS-testing/prototype flows want; switch a site to
-"shippo" once real label purchases are intended.
+"shippo" or "easyship" once real label purchases are intended.
 """
 
 import frappe
@@ -16,10 +16,13 @@ class ShippingProvider:
 
 	name = "base"
 
-	def buy_label(self) -> dict:
+	def buy_label(self, ship_to: dict | None = None, parcel: dict | None = None) -> dict:
 		"""Return {tracking_number, carrier, label_url, transaction_id}.
 
-		label_url may be empty for providers that don't produce a document (e.g. manual).
+		ship_to is {name, company, line_1, line_2, city, state, postal_code, country, phone,
+		email} and parcel is {weight_kg, length_cm, width_cm, height_cm, items}; each carrier
+		client translates them into its own request shape. label_url may be empty for
+		providers that don't produce a document (e.g. manual).
 		"""
 		raise NotImplementedError
 
@@ -29,10 +32,13 @@ class ShippoProvider(ShippingProvider):
 
 	name = "shippo"
 
-	def buy_label(self) -> dict:
+	def buy_label(self, ship_to: dict | None = None, parcel: dict | None = None) -> dict:
 		from soypaq import shippo_client
 
-		return shippo_client.buy_cheapest_label()
+		return shippo_client.buy_cheapest_label(
+			address_to=shippo_client.address_from_ship_to(ship_to),
+			parcel=shippo_client.parcel_from_form(parcel),
+		)
 
 
 class EasyShipProvider(ShippingProvider):
@@ -45,10 +51,13 @@ class EasyShipProvider(ShippingProvider):
 	# so match on a known prefix and fall back to "Other" rather than fail the Ship step.
 	_KNOWN_CARRIERS = ("UPS", "FedEx", "DHL", "USPS")
 
-	def buy_label(self) -> dict:
+	def buy_label(self, ship_to: dict | None = None, parcel: dict | None = None) -> dict:
 		from soypaq import easyship_client
 
-		label = easyship_client.buy_cheapest_label()
+		label = easyship_client.buy_cheapest_label(
+			address_to=easyship_client.address_from_ship_to(ship_to),
+			parcel=easyship_client.parcel_from_form(parcel),
+		)
 		carrier_name = label.get("carrier") or ""
 		label["carrier"] = next(
 			(known for known in self._KNOWN_CARRIERS if known.lower() in carrier_name.lower()),
@@ -65,7 +74,7 @@ class ManualProvider(ShippingProvider):
 
 	name = "manual"
 
-	def buy_label(self) -> dict:
+	def buy_label(self, ship_to: dict | None = None, parcel: dict | None = None) -> dict:
 		# Shipment Task.carrier is a fixed Select (UPS/FedEx/DHL/USPS/Other) - "Other" is
 		# the correct value for "no real carrier chosen yet", not a new option to add.
 		placeholder = frappe.generate_hash(length=10).upper()

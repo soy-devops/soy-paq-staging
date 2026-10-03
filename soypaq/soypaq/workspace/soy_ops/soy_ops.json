@@ -1,7 +1,7 @@
 {
  "app": "soypaq",
  "charts": [],
- "content": "[{\"id\": \"GQpEJHTZY1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Overview</b></span>\", \"col\": 12}}, {\"id\": \"hdccPT8X5j\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Open Sales Orders\", \"col\": 3}}, {\"id\": \"bD7Tx0w8fC\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Open Pick Tasks\", \"col\": 3}}, {\"id\": \"aRx4Ghzc0h\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Ready to Ship\", \"col\": 3}}, {\"id\": \"RpxNmerBF2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Rejected Medusa Orders\", \"col\": 3}}, {\"id\": \"yTxsVkpxki\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"5FWe7cecZV\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Shortcuts</b></span>\", \"col\": 12}}, {\"id\": \"KbdfuXs0UZ\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sales Order\", \"col\": 3}}, {\"id\": \"vaHGyZNCpW\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Delivery Note\", \"col\": 3}}, {\"id\": \"uZM5ew82h0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sales Invoice\", \"col\": 3}}, {\"id\": \"IIvBp4NFAF\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Item\", \"col\": 3}}, {\"id\": \"KEE4wVPBSn\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pick Task\", \"col\": 3}}, {\"id\": \"5sHUsCsCmt\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pack Task\", \"col\": 3}}, {\"id\": \"eSIVxlV7EP\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Shipment Task\", \"col\": 3}}, {\"id\": \"c4v2WBdC9N\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Medusa Intake Log\", \"col\": 3}}, {\"id\": \"eJQRVaAdm3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Error Log\", \"col\": 3}}, {\"id\": \"akW39m5VtZ\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"API Request Log\", \"col\": 3}}, {\"id\": \"6FRNqtfFv5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SoyPaq WMS\", \"col\": 3}}]",
+ "content": "[{\"id\": \"GQpEJHTZY1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Overview</b></span>\", \"col\": 12}}, {\"id\": \"hdccPT8X5j\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Open Sales Orders\", \"col\": 3}}, {\"id\": \"bD7Tx0w8fC\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Open Pick Tasks\", \"col\": 3}}, {\"id\": \"aRx4Ghzc0h\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Ready to Ship\", \"col\": 3}}, {\"id\": \"RpxNmerBF2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Rejected Medusa Orders\", \"col\": 3}}, {\"id\": \"nrv1Items0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Items Needing Review\", \"col\": 3}}, {\"id\": \"yTxsVkpxki\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"5FWe7cecZV\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Shortcuts</b></span>\", \"col\": 12}}, {\"id\": \"KbdfuXs0UZ\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sales Order\", \"col\": 3}}, {\"id\": \"vaHGyZNCpW\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Delivery Note\", \"col\": 3}}, {\"id\": \"uZM5ew82h0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sales Invoice\", \"col\": 3}}, {\"id\": \"IIvBp4NFAF\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Item\", \"col\": 3}}, {\"id\": \"fl1Flagged\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Flagged Items\", \"col\": 3}}, {\"id\": \"ib1Inbound\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Inbound Package\", \"col\": 3}}, {\"id\": \"KEE4wVPBSn\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pick Task\", \"col\": 3}}, {\"id\": \"5sHUsCsCmt\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pack Task\", \"col\": 3}}, {\"id\": \"eSIVxlV7EP\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Shipment Task\", \"col\": 3}}, {\"id\": \"c4v2WBdC9N\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Medusa Intake Log\", \"col\": 3}}, {\"id\": \"eJQRVaAdm3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Error Log\", \"col\": 3}}, {\"id\": \"akW39m5VtZ\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"API Request Log\", \"col\": 3}}, {\"id\": \"6FRNqtfFv5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SoyPaq WMS\", \"col\": 3}}]",
  "creation": "2026-09-21 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -13,7 +13,7 @@
  "is_hidden": 0,
  "label": "Soy Ops",
  "links": [],
- "modified": "2026-09-21 00:00:00.000000",
+ "modified": "2026-10-03 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "SoyPaq",
  "name": "Soy Ops",
@@ -33,6 +33,10 @@
   {
    "label": "Rejected Medusa Orders",
    "number_card_name": "Rejected Medusa Orders"
+  },
+  {
+   "label": "Items Needing Review",
+   "number_card_name": "Items Needing Review"
   }
  ],
  "owner": "Administrator",
@@ -77,6 +81,16 @@
   {
    "label": "Item",
    "link_to": "Item",
+   "type": "DocType"
+  },
+  {
+   "label": "Flagged Items",
+   "type": "URL",
+   "url": "/desk/item?soy_needs_review=1"
+  },
+  {
+   "label": "Inbound Package",
+   "link_to": "Inbound Package",
    "type": "DocType"
   },
   {

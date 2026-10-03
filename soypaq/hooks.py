@@ -128,13 +128,9 @@ after_migrate = ["soypaq.install.after_migrate"]
 # -----------
 # Permissions evaluated in scripted ways
 
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+permission_query_conditions = {
+	"Medusa Intake Log": "soypaq.security.medusa_intake_log_query_conditions",
+}
 
 # Document Events
 # ---------------

@@ -79,6 +79,13 @@ relationship, per-user vs. per-station logins, what counts as "urgent") get aske
 when a plausible-sounding default exists. A wrong assumption here isn't a UI bug, it's a business
 logic bug.
 
+**13. Say so when something is missing or in progress.** If a feature exists in the UI but its
+backend or integration isn't live (e.g. carrier label purchase while the shipping provider is not yet
+enabled), the screen shows a note stating what is missing and what unblocks it, and the control is
+disabled. Never leave a silent empty value or a fake placeholder (invented rates, hardcoded carriers).
+The portal uses the shared `PendingNote` component for this; reuse built-in components and treatments
+(e.g. the SoyPaq Tracking widget) rather than hand-building new markup.
+
 ## Concrete conventions
 
 - **Item thumbnail markup:** `<div class="wms-item-thumb shrink-0"><img v-if="x.image" :src="x.image" :alt="x.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>` — reuse this exact pattern, don't invent a new one per screen.

@@ -33,6 +33,22 @@
   "total_required_qty",
   "total_packed_qty",
   "total_shipped_qty",
+  "ship_to_section",
+  "ship_to_name",
+  "ship_to_company",
+  "ship_to_line_1",
+  "ship_to_line_2",
+  "ship_to_city",
+  "ship_to_state",
+  "column_break_shipto",
+  "ship_to_postal_code",
+  "ship_to_country",
+  "ship_to_phone",
+  "ship_to_email",
+  "parcel_weight_kg",
+  "parcel_length_cm",
+  "parcel_width_cm",
+  "parcel_height_cm",
   "shipping_actions_section",
   "generate_label",
   "column_break_mmbf",
@@ -183,6 +199,87 @@
    "fieldtype": "Float",
    "label": "Total Shipped Qty",
    "read_only": 1
+  },
+  {
+   "fieldname": "ship_to_section",
+   "fieldtype": "Section Break",
+   "label": "Ship To & Parcel"
+  },
+  {
+   "fieldname": "ship_to_name",
+   "fieldtype": "Data",
+   "label": "Recipient Name"
+  },
+  {
+   "fieldname": "ship_to_company",
+   "fieldtype": "Data",
+   "label": "Company"
+  },
+  {
+   "fieldname": "ship_to_line_1",
+   "fieldtype": "Data",
+   "label": "Address Line 1"
+  },
+  {
+   "fieldname": "ship_to_line_2",
+   "fieldtype": "Data",
+   "label": "Address Line 2"
+  },
+  {
+   "fieldname": "ship_to_city",
+   "fieldtype": "Data",
+   "label": "City"
+  },
+  {
+   "fieldname": "ship_to_state",
+   "fieldtype": "Data",
+   "label": "State / Province"
+  },
+  {
+   "fieldname": "column_break_shipto",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "ship_to_postal_code",
+   "fieldtype": "Data",
+   "label": "Postal Code"
+  },
+  {
+   "fieldname": "ship_to_country",
+   "fieldtype": "Data",
+   "label": "Country (2-letter code)"
+  },
+  {
+   "fieldname": "ship_to_phone",
+   "fieldtype": "Data",
+   "label": "Phone"
+  },
+  {
+   "fieldname": "ship_to_email",
+   "fieldtype": "Data",
+   "label": "Email",
+   "options": "Email"
+  },
+  {
+   "fieldname": "parcel_weight_kg",
+   "fieldtype": "Float",
+   "label": "Parcel Weight (kg)"
+  },
+  {
+   "fieldname": "parcel_length_cm",
+   "fieldtype": "Float",
+   "label": "Length (cm)"
+  },
+  {
+   "fieldname": "parcel_width_cm",
+   "fieldtype": "Float",
+   "label": "Width (cm)"
+  },
+  {
+   "fieldname": "parcel_height_cm",
+   "fieldtype": "Float",
+   "label": "Height (cm)"
   },
   {
    "fieldname": "shipping_actions_section",

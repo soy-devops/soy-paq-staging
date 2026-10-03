@@ -12,6 +12,7 @@
   "inbound_asn",
   "column_break_rxek",
   "customer",
+  "assigned_user",
   "target_warehouse",
   "column_break_tzfi",
   "carrier",
@@ -71,6 +72,15 @@
    "fieldtype": "Link",
    "label": "Customer",
    "options": "Customer"
+  },
+  {
+   "fieldname": "assigned_user",
+   "fieldtype": "Link",
+   "label": "Assigned To",
+   "options": "User",
+   "read_only": 1,
+   "no_copy": 1,
+   "search_index": 1
   },
   {
    "fieldname": "target_warehouse",
@@ -193,7 +203,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Received\nInspecting\nStored\nConsolidated\nShipped\nDelivered\nException",
+   "options": "Received\nInspecting\nStored\nConsolidated\nShipped\nDelivered\nException\nCancelled",
    "reqd": 1
   },
   {

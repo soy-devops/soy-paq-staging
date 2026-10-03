@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Alert, Avatar, Badge, Button, FrappeUIProvider, LoadingText, Switch, TextInput, useCall, toast } from 'frappe-ui'
 
 // Bump on every shipped change set - see apps/soypaq/CHANGELOG.md
-const APP_VERSION = '0.11.7'
-const APP_BUILD_DATE = '2026-09-26'
+const APP_VERSION = '0.12.0'
+const APP_BUILD_DATE = '2026-10-03'
 
 const screen = ref('home')
 const history = ref([])
@@ -150,7 +150,6 @@ const MY_TASKS_CREATE_LABEL = {
   Pick: 'New Pick Task (no order needed)',
   Pack: 'New Pack Task (no Pick Task needed)',
   Ship: 'New Shipment Task (no Pack Task needed)',
-  Receive: 'Log inbound ASN (advance notice)',
 }
 const myTasksClaimedByMe = computed(() => myTasksDrawerTask.value?.assigned_to?.id && myTasksDrawerTask.value.assigned_to.id === data.value.operator.id)
 const myTasksClaimedByOther = computed(() => myTasksDrawerTask.value?.assigned_to?.id && myTasksDrawerTask.value.assigned_to.id !== data.value.operator.id)
@@ -183,6 +182,9 @@ const receiveStatus = computed(() => data.value.receive.package.status || '')
 const receiveStored = computed(() => ['Stored', 'Consolidated'].includes(receiveStatus.value))
 const receiveConfirmed = computed(() => receiveTotal.value > 0 && receiveDone.value >= receiveTotal.value)
 const receiveStageableRows = computed(() => data.value.receive.package.items.filter((item) => Number(item.received || 0) > 0 && item.status !== 'Missing' && !item.assigned_bin))
+// Lines actually counted into this box (a blind package has nothing expected, so this is the whole list).
+const receiveLines = computed(() => data.value.receive.package.items.filter((item) => Number(item.received || 0) > 0 && item.status !== 'Missing'))
+const receiveUnits = computed(() => receiveLines.value.reduce((total, item) => total + Number(item.received || 0), 0))
 const receiveStaged = computed(() => receiveConfirmed.value && receiveStageableRows.value.length === 0)
 const selectedReceiveItem = computed(() => data.value.receive.package.items.find((item) => item.sku === selectedReceiveSku.value) || null)
 const openTaskCount = computed(() => Number(data.value.stats.receive || 0) + Number(data.value.stats.pick || 0) + Number(data.value.stats.pack || 0) + Number(data.value.stats.ship || 0))
@@ -466,16 +468,14 @@ async function goToClaimedTask(task) {
 async function startDrawerTask() {
   const task = myTasksDrawerTask.value
   if (!task) return
-  if (task.kind !== 'Receive') {
-    const result = await pickApi('claim_task', { doctype: MY_TASKS_DOCTYPE[task.kind], name: task.name }, `${task.reference} claimed`)
-    if (!result) return
-  }
+  const result = await pickApi('claim_task', { doctype: MY_TASKS_DOCTYPE[task.kind], name: task.name }, `${task.reference} claimed`)
+  if (!result) return
   closeTaskDrawer()
   await goToClaimedTask(task)
 }
 async function releaseDrawerTask() {
   const task = myTasksDrawerTask.value
-  if (!task || task.kind === 'Receive') return
+  if (!task) return
   const result = await pickApi('release_task', { doctype: MY_TASKS_DOCTYPE[task.kind], name: task.name }, `${task.reference} released back to the queue`)
   if (!result) return
   closeTaskDrawer()
@@ -484,7 +484,7 @@ async function releaseDrawerTask() {
 }
 async function cancelDrawerTask() {
   const task = myTasksDrawerTask.value
-  if (!task || task.kind === 'Receive') return
+  if (!task) return
   const result = await pickApi('cancel_task', { doctype: MY_TASKS_DOCTYPE[task.kind], name: task.name }, `${task.reference} cancelled`)
   if (!result) return
   closeTaskDrawer()
@@ -492,7 +492,8 @@ async function cancelDrawerTask() {
 async function openReceivePackage(pkg) {
   selectedPackageName.value = pkg.name
   await bootstrap.reload()
-  receiveMode.value = 'package'
+  // Nothing was expected (a blind package): there is no "Accept package" step, so resume at scanning.
+  receiveMode.value = 'work'
 }
 // Blind receiving's real entry point: no items, no fabricated tracking number - the
 // operator has a box in front of them and nothing else. `create_inbound_asn` (the
@@ -500,16 +501,68 @@ async function openReceivePackage(pkg) {
 // exists, which is the exact workflow this was built to replace.
 const startReceiveOpen = ref(false)
 const startReceiveCustomer = ref('')
-const startReceiveWarehouse = ref('')
 const startReceiveTracking = ref('')
 const startReceiveBusy = ref(false)
+const startReceiveClients = ref([])
+const startReceiveCanCreate = ref(false)
+const startReceiveNew = ref(null) // { name, busy, setting } while the "Create new client" form is open
+let startReceivePoll = null
+async function loadStartReceiveClients() {
+  try {
+    const opts = await fetchApi('receive_client_options', {})
+    startReceiveClients.value = opts.customers || []
+    startReceiveCanCreate.value = !!opts.can_create
+  } catch (error) { toast.error(error.message || 'Could not load clients') }
+}
 function openStartReceiving() {
   startReceiveCustomer.value = ''
-  startReceiveWarehouse.value = ''
   startReceiveTracking.value = ''
+  startReceiveNew.value = null
   startReceiveOpen.value = true
+  loadStartReceiveClients()
 }
-function closeStartReceiving() { startReceiveOpen.value = false }
+function closeStartReceiving() {
+  clearInterval(startReceivePoll)
+  startReceiveNew.value = null
+  startReceiveOpen.value = false
+}
+async function createStartReceiveClient() {
+  const form = startReceiveNew.value
+  const name = (form?.name || '').trim()
+  if (!name) { toast.error("Enter the client's name"); return }
+  form.busy = true
+  try {
+    const result = await fetchApi('create_client', { customer_name: name })
+    form.setting = result.name
+    // Onboarding runs in the background (Company, warehouses, first bin); wait until the client can hold stock.
+    let tries = 0
+    clearInterval(startReceivePoll)
+    startReceivePoll = setInterval(async () => {
+      tries += 1
+      try {
+        const status = await fetchApi('client_setup_status', { customer: result.name })
+        if (status.ready) {
+          clearInterval(startReceivePoll)
+          await loadStartReceiveClients()
+          startReceiveCustomer.value = result.name
+          startReceiveNew.value = null
+          toast.success(`${result.name} is ready`)
+        } else if (tries >= 40) {
+          clearInterval(startReceivePoll)
+          if (startReceiveNew.value) { startReceiveNew.value.setting = ''; startReceiveNew.value.busy = false }
+          toast.error(`${result.name} was created but setup is still running - reopen this popup in a minute`)
+        }
+      } catch (error) {
+        clearInterval(startReceivePoll)
+        if (startReceiveNew.value) { startReceiveNew.value.setting = ''; startReceiveNew.value.busy = false }
+        toast.error(error.message || 'Could not check client setup')
+      }
+    }, 1500)
+  } catch (error) {
+    form.busy = false
+    toast.error(error.message || 'Could not create the client')
+  }
+}
 async function submitStartReceiving() {
   const customer = startReceiveCustomer.value.trim()
   if (!customer) { toast.error('Choose which client this package belongs to'); return }
@@ -517,17 +570,12 @@ async function submitStartReceiving() {
   try {
     const result = await fetchApi('start_receiving_session', {
       customer,
-      target_warehouse: startReceiveWarehouse.value.trim(),
       tracking_number: startReceiveTracking.value.trim(),
     })
     startReceiveOpen.value = false
     selectedPackageName.value = result.name
     await bootstrap.reload()
-    // Straight to the scan screen, not the 'package' step - that step gates on
-    // "Accept package" being enabled by expected lines, which a blind package by
-    // definition has none of. There is nothing to accept against; go straight to
-    // scanning what's actually in the box.
-    receiveMode.value = 'confirm'
+    receiveMode.value = 'work'
     toast.success(result.resumed ? `Resumed package ${result.name}` : `Receiving started - ${result.name}`)
   } catch (error) {
     toast.error(error.message || 'Could not start receiving')
@@ -535,78 +583,117 @@ async function submitStartReceiving() {
     startReceiveBusy.value = false
   }
 }
-function receivePackage() { receiveMode.value = 'confirm'; toast.success('Package accepted for receiving') }
 async function openShipmentTask(task) {
   selectedShipmentTaskName.value = task.name
   await bootstrap.reload()
   shipMode.value = 'active'
 }
-async function receiveItem(item, quantity = 1) {
-  await pickApi('receive_item', { package_name: data.value.receive.package.name, item_code: item.sku, quantity }, `${item.sku} confirmed`)
-}
-async function unreceiveItem(item, quantity = 1) {
-  await pickApi('unreceive_item', { package_name: data.value.receive.package.name, item_code: item.sku, quantity }, `${item.sku} reduced`)
-}
-// Receiving here is discovery, not verification: an item that is not already on the
-// package is the normal case. Resolution happens server-side against Item Barcode
-// (Tier 1); anything unresolved opens provisional capture (Tier 3) rather than erroring.
+// Receiving is discovery: an item not already on the package is the normal case. A known barcode adds
+// to its line; an unknown one opens the new-item sheet, prefilled from the client's own catalogue.
 const receiveScanQty = ref(1)
-const provisionalCode = ref('')
-const provisionalName = ref('')
-const provisionalQty = ref(1)
-const provisionalBusy = ref(false)
+const newItem = ref(null)
+const lineMenu = ref(null)
+const storedResult = ref(null)
+const newItemColors = computed(() => [...new Set([...(newItem.value?.options.colors || []), newItem.value?.color].filter(Boolean))])
+const newItemSizes = computed(() => [...new Set([...(newItem.value?.options.sizes || []), newItem.value?.size].filter(Boolean))])
+const newItemName = computed(() => {
+  const form = newItem.value
+  if (!form) return ''
+  return (form.template || '{PRODUCT} {COLOR} {SIZE}').replace('{PRODUCT}', form.product || '').replace('{COLOR}', form.color || '').replace('{SIZE}', form.size || '').replace(/\s+/g, ' ').trim().toUpperCase()
+})
+const groupLabel = (group) => String(group || '').replace(`${data.value.receive.package.customer} - `, '')
 
 async function scanReceiveItem() {
   const code = receiveScanValue.value.trim()
   if (!code) { toast.error('Scan or enter an item barcode'); return }
   const qty = Number(receiveScanQty.value) || 1
-  const result = await pickApi('receive_scan', {
-    package_name: data.value.receive.package.name,
-    code,
-    quantity: qty,
-  }, null)
-  if (result && result.resolved === false) {
-    provisionalCode.value = result.code
-    provisionalName.value = ''
-    provisionalQty.value = qty
-    toast.error(`${result.code} is not in the catalogue - describe it to receive it`)
-    return
-  }
-  toast.success(`${code} x${qty} confirmed`)
+  const result = await pickApi('receive_scan', { package_name: data.value.receive.package.name, code, quantity: qty }, null)
+  if (!result) return
+  if (result.resolved === false) { await openNewItem(result.code, qty); return }
+  toast.success(`${code} x${qty} added`)
   receiveScanValue.value = ''
   receiveScanQty.value = 1
 }
-function cancelProvisional() {
-  provisionalCode.value = ''
-  provisionalName.value = ''
-}
-async function captureProvisional() {
-  const name = provisionalName.value.trim()
-  if (!name) { toast.error('Describe the item so it can be reviewed later'); return }
-  provisionalBusy.value = true
+async function openNewItem(code, qty) {
   try {
-    await pickApi('capture_provisional_item', {
-      package_name: data.value.receive.package.name,
-      code: provisionalCode.value,
-      item_name: name,
-      quantity: Number(provisionalQty.value) || 1,
-    }, `${provisionalCode.value} captured for review`)
-    cancelProvisional()
+    const s = await fetchApi('receive_item_suggestion', { package_name: data.value.receive.package.name, code })
+    newItem.value = {
+      code: s.code, barcode_type: s.barcode_type, related: s.related, template: s.template,
+      options: { products: s.products, colors: s.colors, sizes: s.sizes, groups: s.groups },
+      product: s.prefill.product, color: s.prefill.color, size: s.prefill.size, group: s.prefill.group, collection: s.prefill.collection,
+      productNew: false, colorNew: false, sizeNew: false, qty, flag: false, note: '', busy: false,
+    }
+  } catch (error) { toast.error(error.message || 'Could not look up this barcode') }
+}
+function newItemProductChosen(value) {
+  const form = newItem.value
+  if (value === '__new__') { form.productNew = true; form.product = ''; return }
+  form.product = value
+  const known = form.options.products.find((p) => p.product === value)
+  if (known) { form.group = known.group || form.group; form.collection = known.collection || form.collection }
+}
+async function submitNewItem() {
+  const form = newItem.value
+  if (!form.product.trim()) { toast.error('Pick or type the product'); return }
+  form.busy = true
+  try {
+    const result = await pickApi('receive_new_item', {
+      package_name: data.value.receive.package.name, code: form.code, product: form.product, color: form.color, size: form.size,
+      item_group: form.group, collection: form.collection, quantity: Number(form.qty) || 1, flag: form.flag ? 1 : 0, note: form.note,
+    }, `${form.code} added`)
+    if (result === null) return
+    newItem.value = null
     receiveScanValue.value = ''
     receiveScanQty.value = 1
-  } finally { provisionalBusy.value = false }
+    await loadStageBins()
+  } finally { if (newItem.value) newItem.value.busy = false }
 }
-async function receiveAll() {
-  await pickApi('receive_all', { package_name: data.value.receive.package.name }, 'All expected items confirmed')
+async function setLineQty(item, value) {
+  const qty = Number(value)
+  if (Number.isNaN(qty) || qty < 0) { toast.error('Enter a quantity of 0 or more'); return }
+  if (qty === Number(item.received)) return
+  await pickApi('set_received_qty', { package_name: data.value.receive.package.name, item_code: item.sku, quantity: qty }, qty ? `${item.sku} set to ${qty}` : `${item.sku} removed`)
 }
-function openReceiveDrawer(item) {
-  selectedReceiveSku.value = item.sku
-  receiveMode.value = 'drawer'
+async function openLineMenu(item) {
+  let groups = []
+  try { groups = (await fetchApi('receive_item_suggestion', { package_name: data.value.receive.package.name, code: item.sku })).groups } catch { groups = [] }
+  if (item.item_group && !groups.includes(item.item_group)) groups = [item.item_group, ...groups]
+  lineMenu.value = { item, groups, group: item.item_group, reason: '' }
 }
-async function flagReceiveItem(reason) {
-  if (!selectedReceiveItem.value) return toast.info('Choose an item line first')
-  await pickApi('flag_receive_item', { package_name: data.value.receive.package.name, item_code: selectedReceiveItem.value.sku, reason }, `${selectedReceiveItem.value.sku} marked ${reason}`)
-  receiveMode.value = 'confirm'
+async function lineSetCondition(condition) {
+  const menu = lineMenu.value
+  const reason = condition === 'Good' ? 'Good' : condition
+  if (reason === 'Good' && !['Damaged', 'Hold'].includes(menu.item.status)) { lineMenu.value = null; return }
+  await pickApi('flag_receive_item', { package_name: data.value.receive.package.name, item_code: menu.item.sku, reason }, `${menu.item.sku} marked ${condition}`)
+  lineMenu.value = null
+}
+async function lineSetGroup() {
+  const menu = lineMenu.value
+  const result = await pickApi('set_item_group', { package_name: data.value.receive.package.name, item_code: menu.item.sku, item_group: menu.group }, `${menu.item.sku} moved to ${groupLabel(menu.group)} and flagged`)
+  if (result !== null) lineMenu.value = null
+}
+async function lineFlag() {
+  const menu = lineMenu.value
+  const result = await pickApi('flag_item', { package_name: data.value.receive.package.name, item_code: menu.item.sku, reason: menu.reason }, `${menu.item.sku} flagged for review`)
+  if (result !== null) lineMenu.value = null
+}
+async function storeReceivePackage() {
+  const lines = receiveLines.value.map((line) => ({ item_code: line.sku, name: line.name, qty: line.received, bin: line.assigned_bin }))
+  const result = await pickApi('complete_receipt', { package_name: data.value.receive.package.name }, 'Package stored - inventory available')
+  if (!result) return
+  storedResult.value = { ...result, lines: (result.lines || []).map((l) => ({ ...l, name: lines.find((x) => x.item_code === l.item_code)?.name })) }
+  receiveMode.value = 'stored'
+}
+const receiveStoredLines = computed(() => storedResult.value?.name === data.value.receive.package.name
+  ? storedResult.value.lines
+  : receiveLines.value.map((line) => ({ item_code: line.sku, name: line.name, qty: line.received, bin: line.assigned_bin })))
+const receiveStoredEntry = computed(() => (storedResult.value?.name === data.value.receive.package.name ? storedResult.value.stock_entry : '') || data.value.receive.package.stock_entry || '')
+async function receiveNextSameClient() {
+  const client = data.value.receive.package.customer
+  receiveMode.value = 'tasks'
+  openStartReceiving()
+  await loadStartReceiveClients()
+  if (startReceiveClients.value.includes(client)) startReceiveCustomer.value = client
 }
 // --- Inventory as an action surface (Pick revision, Phase 1) ---------------------
 // Actions hang off the per-bin location card rather than the item, because physical
@@ -619,13 +706,13 @@ const binMoveQty = ref('')
 const binMoveTarget = ref('')
 // "+ New bin": pick the customer, the code defaults to the next free one (A07 after A06).
 const newBin = ref(null)
-// "Example Company - Storage - A02 - S" to "A02" for compact lines.
+// "Acme - Storage - A02 - AC" to "A02" for compact lines.
 const shortBin = (name) => String(name || '').replace(/^.* - Storage - /, '').replace(/ - [A-Z]+$/, '')
-async function openNewBin(forMove = false) {
+async function openNewBin(forMove = false, customer = '', onCreated = null) {
   try {
-    const opts = await wmsCall('new_bin_options', {})
+    const opts = await wmsCall('new_bin_options', customer ? { customer } : {})
     if (!opts.customers.length) { toast.error('No customer has a Storage zone to add a bin to'); return }
-    newBin.value = { ...opts, forMove, busy: false }
+    newBin.value = { ...opts, forMove, onCreated, busy: false }
   } catch (error) { toast.error(error.message) }
 }
 async function newBinCustomerChanged() {
@@ -637,7 +724,8 @@ async function submitNewBin() {
   try {
     const result = await pickApi('create_bin', { customer: form.customer, code: form.code }, 'Bin created')
     if (result === null) return
-    if (form.forMove && result?.code) binMoveTarget.value = result.code
+    if (form.forMove && result?.name) binMoveTarget.value = result.name
+    if (form.onCreated && result?.name) await form.onCreated(result)
     newBin.value = null
   } finally { if (newBin.value) newBin.value.busy = false }
 }
@@ -653,6 +741,8 @@ function openBinAction(location, mode) {
   binAdjustReason.value = 'Count Correction'
   binMoveQty.value = '1'
   binMoveTarget.value = ''
+  moveBins.value = []
+  if (mode === 'move') loadMoveBins(location)
 }
 function closeBinAction() {
   activeBinAction.value = { location: null, mode: '' }
@@ -739,18 +829,76 @@ watch(selectedItemCode, (code) => {
   else binActivity.value = []
 })
 
+// A client's bins for the pickers: where an item already lives first, then the rest, then "+ New bin".
+const stageBins = ref([])
+const moveBins = ref([])
+async function loadStageBins() {
+  const pkg = data.value.receive?.package
+  if (!pkg?.name) { stageBins.value = []; return }
+  try {
+    const result = await wmsCall('client_bins', { customer: pkg.customer || '', item_codes: JSON.stringify((pkg.items || []).map((i) => i.sku)) })
+    stageBins.value = result.bins || []
+  } catch (error) { toast.error(error.message || 'Could not load bins') }
+}
+function binGroups(bins, sku, exclude = '') {
+  const usable = bins.filter((b) => b.warehouse !== exclude)
+  return { held: usable.filter((b) => (b.held || {})[sku] > 0), other: usable.filter((b) => !((b.held || {})[sku] > 0)) }
+}
+async function stageBinChosen(item, value) {
+  if (value !== '__new__') return
+  delete stagingBinInputs.value[item.sku]
+  await openNewBin(false, data.value.receive.package.customer, async (created) => {
+    await loadStageBins()
+    stagingBinInputs.value[item.sku] = created.name
+  })
+}
+const moveBinsCustomer = ref('')
+async function loadMoveBins(location) {
+  try {
+    const result = await wmsCall('client_bins', { near_warehouse: location.warehouse, item_codes: JSON.stringify([selectedInventoryItem.value?.item_code].filter(Boolean)) })
+    moveBins.value = result.bins || []
+    moveBinsCustomer.value = result.customer || ''
+  } catch (error) { toast.error(error.message || 'Could not load bins') }
+}
+async function moveBinChosen(value) {
+  if (value !== '__new__') return
+  binMoveTarget.value = ''
+  // forMove makes the new bin the destination; reload so it shows in the list too.
+  await openNewBin(true, moveBinsCustomer.value, () => loadMoveBins(activeBinAction.value.location))
+}
+watch(receiveMode, (mode) => { if (mode === 'work') loadStageBins() })
+// Put-away suggestion per line: a bin that already holds the item, else the last bin used in this box.
+const lastStageBin = ref('')
+function applyBinDefaults() {
+  for (const line of receiveStageableRows.value) {
+    if (stagingBinInputs.value[line.sku]) continue
+    const held = binGroups(stageBins.value, line.sku).held[0]
+    const lastBin = lastStageBin.value || [...receiveLines.value].reverse().find((l) => l.assigned_bin)?.assigned_bin
+    const fallback = stageBins.value.find((b) => b.warehouse === lastBin)
+    if (held || fallback) stagingBinInputs.value[line.sku] = (held || fallback).warehouse
+  }
+}
+watch(stageBins, applyBinDefaults)
+// A new line needs to know where that item already lives: reload the client's bins when lines are added.
+watch(() => receiveLines.value.map((l) => l.sku).join('|'), (now, before) => {
+  if (receiveMode.value === 'work' && now.split('|').some((sku) => sku && !(before || '').split('|').includes(sku))) loadStageBins()
+})
+async function stageAllSuggested() {
+  for (const line of [...receiveStageableRows.value]) {
+    const bin = stagingBinInputs.value[line.sku]
+    if (bin) await stageItem(line, bin)
+  }
+}
 async function stageItem(item, binCode) {
   const code = (binCode || '').trim()
   if (!code) { toast.error('Scan or enter a bin code'); return }
-  await pickApi('stage_item', { package_name: data.value.receive.package.name, item_code: item.sku, bin_code: code }, `${item.sku} staged to ${code}`)
+  const result = await pickApi('stage_item', { package_name: data.value.receive.package.name, item_code: item.sku, bin_code: code }, `${item.sku} staged to ${shortBin(code)}`)
   delete stagingBinInputs.value[item.sku]
+  if (result !== null) { lastStageBin.value = code; applyBinDefaults() }
 }
 function openStageScanner(item) {
   stagingTargetSku.value = item.sku
   openScanner('stage-bin')
-}
-async function completeReceipt() {
-  await pickApi('complete_receipt', { package_name: data.value.receive.package.name }, 'Package stored - inventory available in ERPNext')
 }
 // Every bin is confirmed on the server: by scanning the bin, scanning an item in it (a scan proves presence),
 // or "I'm here" for tapping. A single-bin task's server gate expects the task's own bin code.
@@ -1176,8 +1324,25 @@ async function unpackItem(item) {
 async function completePack() {
   await mutate(completePackRequest, { task_name: packTaskName.value }, 'Box confirmed and released to shipping')
 }
+const emptyShipForm = () => ({ name: '', company: '', line_1: '', line_2: '', city: '', state: '', postal_code: '', country: 'US', phone: '', email: '', weight_kg: '', length_cm: '', width_cm: '', height_cm: '' })
+const shipForm = ref(emptyShipForm())
+const shipFormTask = ref('')
+const shipToFields = [['name', 'Recipient name'], ['company', 'Company'], ['line_1', 'Address line 1'], ['line_2', 'Address line 2'], ['city', 'City'], ['state', 'State / province'], ['postal_code', 'Postal code'], ['country', 'Country (2 letters)'], ['phone', 'Phone'], ['email', 'Email']]
+const parcelFields = [['weight_kg', 'Weight (kg)'], ['length_cm', 'Length (cm)'], ['width_cm', 'Width (cm)'], ['height_cm', 'Height (cm)']]
+// Prefill once per shipment task (saved entry, else the order's address); later reloads don't overwrite typing.
+watch(() => data.value.ship, (ship) => {
+  if (!ship?.name || shipFormTask.value === ship.name) return
+  shipFormTask.value = ship.name
+  const parcel = Object.fromEntries(Object.entries(ship.parcel || {}).map(([key, value]) => [key, value || '']))
+  shipForm.value = { ...emptyShipForm(), ...Object.fromEntries(Object.entries(ship.ship_to || {}).filter(([, value]) => value)), ...parcel }
+}, { immediate: true })
 async function generateLabel() {
-  await pickApi('generate_shipment_label', { task_name: data.value.ship.name }, 'Shipping label generated and saved')
+  const { weight_kg, length_cm, width_cm, height_cm, ...shipTo } = shipForm.value
+  await pickApi('generate_shipment_label', {
+    task_name: data.value.ship.name,
+    ship_to: JSON.stringify(shipTo),
+    parcel: JSON.stringify({ weight_kg, length_cm, width_cm, height_cm }),
+  }, 'Shipping label generated and saved')
 }
 async function completeShipment() {
   const result = await pickApi('mark_shipment_shipped', { task_name: data.value.ship.name }, 'Shipment marked shipped in ERPNext')
@@ -1244,7 +1409,7 @@ onBeforeUnmount(() => {
 
             <section v-else-if="showMyTasksList" class="space-y-3">
               <Button v-if="myTasksScreenKind === 'Receive'" label="Start receiving (scan as you go)" icon-left="lucide-package-plus" variant="solid" theme="green" class="w-full" @click="openStartReceiving" />
-              <Button v-if="myTasksScreenKind" :label="MY_TASKS_CREATE_LABEL[myTasksScreenKind]" icon-left="lucide-plus" variant="outline" :theme="myTasksScreenKind === 'Receive' ? 'gray' : 'green'" class="w-full" @click="openCreateForm(myTasksScreenKind.toLowerCase())" />
+              <Button v-if="myTasksScreenKind && myTasksScreenKind !== 'Receive'" :label="MY_TASKS_CREATE_LABEL[myTasksScreenKind]" icon-left="lucide-plus" variant="outline" :theme="myTasksScreenKind === 'Receive' ? 'gray' : 'green'" class="w-full" @click="openCreateForm(myTasksScreenKind.toLowerCase())" />
               <TextInput v-model="searchValue" label="Search tasks" />
               <div class="grid grid-cols-3 gap-2 rounded-4 border border-outline-gray-2 bg-surface-base p-1">
                 <Button :label="myTasksActive.length ? `Active (${myTasksActive.length})` : 'Active'" :variant="myTasksTab === 'active' ? 'solid' : 'ghost'" theme="green" @click="setMyTasksTab('active')" />
@@ -1276,129 +1441,194 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="screen === 'receive'" class="space-y-4">
-              <template v-if="receiveMode === 'package'">
+              <template v-if="receiveStored || receiveMode === 'stored'">
                 <Button label="Back to packages" icon-left="lucide-arrow-left" variant="ghost" theme="gray" size="sm" class="!px-0" @click="receiveMode = 'tasks'" />
-                <div class="wms-stepper"><span class="is-active">Package</span><span>Confirm</span><span>Stage</span><span>Stored</span></div>
-                <div class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
-                  <p class="text-2xs-semibold text-ink-green-6">Incoming package</p>
-                  <p class="mt-1 text-xl-semibold text-ink-green-7">{{ data.receive.package.tracking || data.receive.package.name }}</p>
-                  <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-outline-green-2 pt-3 text-xs">
-                    <div><p class="text-ink-gray-5">Client</p><p class="mt-1 truncate text-sm-semibold">{{ data.receive.asn.customer || 'Not set' }}</p></div>
-                    <div><p class="text-ink-gray-5">Carrier</p><p class="mt-1 truncate text-sm-semibold">{{ data.receive.asn.carrier || 'Not set' }}</p></div>
-                    <div><p class="text-ink-gray-5">Destination</p><p class="mt-1 truncate text-sm-semibold">{{ data.receive.package.warehouse || 'Not set' }}</p></div>
-                    <div><p class="text-ink-gray-5">ASN</p><p class="mt-1 truncate text-sm-semibold">{{ data.receive.asn.reference || 'Not linked' }}</p></div>
-                  </div>
-                </div>
-                <div>
-                  <p class="mb-2 text-sm-semibold">Expected contents ({{ receiveTotal }} line{{ receiveTotal === 1 ? '' : 's' }})</p>
-                  <div class="rounded-4 border border-outline-gray-2">
-                    <div v-for="item in data.receive.package.items" :key="item.sku" class="flex items-center gap-2 border-b border-outline-gray-1 p-2 last:border-0">
-                      <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
-                      <div class="min-w-0 flex-1"><p class="truncate text-sm-semibold">{{ item.name }}</p><p class="truncate text-2xs text-ink-gray-5">{{ item.sku }}</p></div>
-                      <p class="text-sm-semibold">{{ item.quantity }}</p>
-                    </div>
-                    <p v-if="!receiveTotal" class="p-4 text-center text-sm text-ink-gray-5">This package has no expected lines.</p>
-                  </div>
-                </div>
-                <Button label="Accept package" variant="solid" theme="green" class="w-full" :disabled="!receiveTotal" @click="receivePackage" />
-              </template>
-
-              <template v-else-if="receiveStored">
-                <Button label="Back to packages" icon-left="lucide-arrow-left" variant="ghost" theme="gray" size="sm" class="!px-0" @click="receiveMode = 'tasks'" />
-                <Alert title="Inventory available" description="This package has been stored into its bins in ERPNext." theme="green" />
-                <Button label="View staged inventory" variant="solid" theme="green" class="w-full" @click="inventoryView = 'staged'; setScreen('inventory')" />
-              </template>
-
-              <template v-else-if="receiveMode === 'drawer'">
-                <Button label="Back" icon-left="lucide-arrow-left" variant="ghost" theme="gray" size="sm" class="!px-0" @click="receiveMode = 'confirm'" />
-                <div class="rounded-5 border border-outline-gray-2 bg-surface-base p-3 shadow-lg">
-                  <div class="flex items-start gap-3">
-                    <div class="wms-item-thumb !h-16 !w-16 shrink-0"><img v-if="selectedReceiveItem?.image" :src="selectedReceiveItem.image" :alt="selectedReceiveItem.name" /><span v-else class="lucide-shirt size-8 text-ink-green-6" aria-hidden="true" /></div>
-                    <div class="min-w-0 flex-1">
-                      <p class="truncate text-base-semibold">{{ selectedReceiveItem?.name }}</p>
-                      <p class="truncate text-2xs text-ink-gray-5">{{ selectedReceiveItem?.sku }} - {{ selectedReceiveItem?.received || 0 }} / {{ selectedReceiveItem?.quantity || 0 }} confirmed</p>
-                    </div>
-                  </div>
-                  <p class="mb-2 mt-4 text-sm-semibold">Report an exception</p>
-                  <div class="grid grid-cols-2 gap-2">
-                    <Button label="Damaged" variant="outline" theme="gray" size="sm" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="flagReceiveItem('Damaged')" />
-                    <Button label="Missing" variant="outline" theme="red" size="sm" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="flagReceiveItem('Missing')" />
-                    <Button label="Hold" variant="outline" theme="gray" size="sm" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="flagReceiveItem('Hold')" />
-                    <Button label="Unknown SKU" variant="outline" theme="gray" size="sm" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="flagReceiveItem('Unknown SKU')" />
-                  </div>
-                </div>
-              </template>
-
-              <template v-else-if="receiveMode === 'stage'">
-                <Button label="Back to confirm" icon-left="lucide-arrow-left" variant="ghost" theme="gray" size="sm" class="!px-0" @click="receiveMode = 'confirm'" />
-                <div class="wms-stepper"><span class="is-complete">Package</span><span class="is-complete">Confirm</span><span class="is-active">Stage</span><span>Stored</span></div>
-                <p class="text-sm-semibold">Stage items into bins</p>
+                <div class="wms-stepper"><span class="is-complete">Count</span><span class="is-complete">Stage</span><span class="is-complete">Finish</span></div>
+                <Alert title="Stored - inventory available" :description="`${receiveStoredLines.length} line${receiveStoredLines.length === 1 ? '' : 's'}, ${receiveStoredLines.reduce((t, l) => t + Number(l.qty || 0), 0)} units now in their bins.`" theme="green" />
                 <div class="rounded-4 border border-outline-gray-2">
-                  <div v-for="item in data.receive.package.items.filter((i) => Number(i.received || 0) > 0 && i.status !== 'Missing')" :key="item.sku" class="flex items-center gap-2 border-b border-outline-gray-1 p-3 last:border-0">
-                    <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
-                    <div class="min-w-0 flex-1">
-                      <p class="truncate text-sm-semibold">{{ item.name }}</p>
-                      <p class="truncate text-xs text-ink-gray-5">{{ item.sku }} - qty {{ item.received }}</p>
-                    </div>
-                    <Badge v-if="item.assigned_bin" :label="item.assigned_bin" theme="green" variant="subtle" />
-                    <template v-else>
-                      <TextInput v-model="stagingBinInputs[item.sku]" placeholder="Scan or type e.g. A2" class="w-28" @keyup.enter="stageItem(item, stagingBinInputs[item.sku])" />
-                      <Button icon="lucide-scan-line" aria-label="Scan bin" variant="outline" theme="green" size="sm" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="openStageScanner(item)" />
-                    </template>
+                  <div v-for="line in receiveStoredLines" :key="line.item_code" class="flex items-center justify-between gap-2 border-b border-outline-gray-1 p-3 last:border-0">
+                    <div class="min-w-0"><p class="truncate text-sm-semibold">{{ line.name || line.item_code }}</p><p class="truncate text-2xs text-ink-gray-5">{{ line.item_code }}</p></div>
+                    <div class="text-right"><p class="text-sm-semibold">{{ line.qty }}</p><p class="text-2xs text-ink-gray-5">{{ shortBin(line.bin) }}</p></div>
                   </div>
-                  <p v-if="!data.receive.package.items.filter((i) => Number(i.received || 0) > 0 && i.status !== 'Missing').length" class="p-4 text-center text-sm text-ink-gray-5">Nothing to stage yet.</p>
                 </div>
-                <Button label="Mark stored / inventory available" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" :disabled="!receiveStaged || pickMutationLoading" @click="completeReceipt" />
+                <Button v-if="receiveStoredEntry" :label="`Stock Entry ${receiveStoredEntry}`" variant="ghost" theme="green" class="w-full" @click="openDesk(data.receive.package.stock_entry_route || '/desk/stock-entry/' + receiveStoredEntry)" />
+                <Button label="Receive next package (same client)" variant="solid" theme="green" class="w-full" @click="receiveNextSameClient" />
+                <Button label="Back to packages" variant="outline" theme="gray" class="w-full" @click="receiveMode = 'tasks'" />
+              </template>
+
+              <template v-else-if="receiveMode === 'finish'">
+                <Button label="Back to count and stage" icon-left="lucide-arrow-left" variant="ghost" theme="gray" size="sm" class="!px-0" @click="receiveMode = 'work'" />
+                <div class="wms-stepper"><span class="is-complete">Count</span><span class="is-complete">Stage</span><span class="is-active">Finish</span></div>
+                <div class="rounded-4 border border-outline-gray-2 p-3">
+                  <p class="text-sm-semibold">Ready to store</p>
+                  <div class="mt-2 grid grid-cols-3 gap-2 text-center">
+                    <div><p class="text-lg-semibold">{{ receiveLines.length }}</p><p class="text-2xs text-ink-gray-5">lines</p></div>
+                    <div><p class="text-lg-semibold">{{ receiveUnits }}</p><p class="text-2xs text-ink-gray-5">units</p></div>
+                    <div><p class="text-lg-semibold">{{ new Set(receiveLines.map((l) => l.assigned_bin)).size }}</p><p class="text-2xs text-ink-gray-5">bins</p></div>
+                  </div>
+                  <p v-if="receiveLines.some((l) => ['Damaged', 'Hold'].includes(l.status))" class="mt-2 text-xs text-ink-amber-6">{{ receiveLines.filter((l) => ['Damaged', 'Hold'].includes(l.status)).length }} line(s) damaged or on hold.</p>
+                  <p v-if="receiveLines.some((l) => l.needs_review)" class="mt-1 text-xs text-ink-amber-6">{{ receiveLines.filter((l) => l.needs_review).length }} item(s) flagged for Soy Ops review - they store normally.</p>
+                </div>
+                <div class="rounded-4 border border-outline-gray-2">
+                  <div v-for="line in receiveLines" :key="line.sku" class="flex items-center justify-between gap-2 border-b border-outline-gray-1 p-3 last:border-0">
+                    <div class="min-w-0"><p class="truncate text-sm-semibold">{{ line.name }}</p><p class="truncate text-2xs text-ink-gray-5">{{ line.sku }}</p></div>
+                    <div class="text-right"><p class="text-sm-semibold">{{ line.received }}</p><p class="text-2xs text-ink-gray-5">{{ shortBin(line.assigned_bin) }}</p></div>
+                  </div>
+                </div>
+                <p class="text-xs text-ink-gray-5">Storing posts one stock receipt for the whole package. After this, corrections are made from Live inventory (Adjust qty, Move bin).</p>
+                <Button label="Store package" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="storeReceivePackage" />
               </template>
 
               <template v-else>
                 <Button label="Back to packages" icon-left="lucide-arrow-left" variant="ghost" theme="gray" size="sm" class="!px-0" @click="receiveMode = 'tasks'" />
-                <div class="wms-stepper"><span class="is-complete">Package</span><span class="is-active">Confirm</span><span>Stage</span><span>Stored</span></div>
+                <div class="wms-stepper"><span :class="receiveLines.length ? 'is-complete' : 'is-active'">Count</span><span :class="!receiveLines.length ? '' : (receiveStageableRows.length ? 'is-active' : 'is-complete')">Stage</span><span>Finish</span></div>
+                <div class="rounded-4 border border-outline-gray-2 bg-surface-base p-3">
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0"><p class="text-2xs text-ink-gray-5">Receiving for</p><p class="truncate text-base-semibold">{{ data.receive.package.customer || 'No client' }}</p></div>
+                    <div class="text-right"><p class="text-2xs text-ink-gray-5">{{ data.receive.package.name }}</p><p v-if="data.receive.package.tracking" class="truncate text-2xs text-ink-gray-5">{{ data.receive.package.tracking }}</p></div>
+                  </div>
+                  <p class="mt-2 text-xs text-ink-gray-5">{{ receiveLines.length }} line{{ receiveLines.length === 1 ? '' : 's' }} - {{ receiveUnits }} unit{{ receiveUnits === 1 ? '' : 's' }} - {{ receiveLines.length - receiveStageableRows.length }} staged</p>
+                </div>
+
                 <div class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
-                  <p class="text-sm-semibold text-ink-green-7">Scan or Enter SKU</p>
-                  <div class="mt-3 flex items-end gap-2">
-                    <TextInput v-model="receiveScanValue" label="Scan barcode or enter SKU" class="flex-1" @keyup.enter="scanReceiveItem" />
+                  <div class="flex items-end gap-2">
+                    <TextInput v-model="receiveScanValue" label="Scan or enter barcode" class="flex-1" @keyup.enter="scanReceiveItem">
+                      <template #suffix><button type="button" class="lucide-scan-line mr-2 size-4 text-ink-gray-5" aria-label="Scan with camera" @click="openScanner('receive-sku')" /></template>
+                    </TextInput>
                     <TextInput v-model="receiveScanQty" type="number" label="Qty" class="w-20" />
-                    <Button icon="lucide-scan-line" aria-label="Scan item barcode" variant="outline" theme="green" @click="openScanner('receive-sku')" />
                   </div>
-                  <Button label="Confirm scan" variant="solid" theme="green" class="mt-3 w-full" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="scanReceiveItem" />
-                  <div v-if="provisionalCode" class="mt-3 space-y-2 rounded-4 border border-outline-amber-2 bg-surface-amber-1 p-3">
-                    <p class="text-xs-semibold text-ink-amber-6">{{ provisionalCode }} is not in the catalogue</p>
-                    <p class="text-2xs text-ink-gray-5">Describe it and keep going - it will be staged normally and flagged for review.</p>
-                    <TextInput v-model="provisionalName" label="What is it?" placeholder="e.g. Unmarked navy hoodie" />
-                    <TextInput v-model="provisionalQty" type="number" label="Quantity" />
-                    <div class="grid grid-cols-2 gap-2">
-                      <Button label="Cancel" variant="ghost" theme="gray" @click="cancelProvisional" />
-                      <Button label="Capture & receive" variant="solid" theme="green" :loading="provisionalBusy" @click="captureProvisional" />
-                    </div>
+                  <Button label="Add" variant="solid" theme="green" class="mt-3 w-full" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="scanReceiveItem" />
+                </div>
+
+                <div v-if="newItem" class="space-y-2 rounded-4 border border-outline-amber-2 bg-surface-amber-1 p-3">
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm-semibold">New item <span class="text-ink-gray-5">{{ newItem.code }}</span></p>
+                    <Badge :label="newItem.barcode_type" theme="gray" variant="subtle" />
+                  </div>
+                  <p class="text-2xs text-ink-gray-5">{{ newItem.related ? `Filled in from ${newItem.related} - check and confirm.` : 'Not in the catalogue. Pick what it is; anything left blank is flagged for review.' }}</p>
+                  <label class="block">
+                    <span class="mb-1 block text-2xs text-ink-gray-5">Product</span>
+                    <select v-if="!newItem.productNew" :value="newItem.product" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" @change="newItemProductChosen($event.target.value)">
+                      <option value="" disabled>Choose product</option>
+                      <option v-for="p in newItem.options.products" :key="p.product" :value="p.product">{{ p.product }}</option>
+                      <option value="__new__">+ New product...</option>
+                    </select>
+                    <TextInput v-else v-model="newItem.product" placeholder="e.g. Basic Logo Tee" />
+                  </label>
+                  <div class="grid grid-cols-2 gap-2">
+                    <label class="block">
+                      <span class="mb-1 block text-2xs text-ink-gray-5">Color</span>
+                      <select v-if="!newItem.colorNew" :value="newItem.color" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" @change="$event.target.value === '__new__' ? (newItem.colorNew = true, newItem.color = '') : (newItem.color = $event.target.value)">
+                        <option value="">-</option>
+                        <option v-for="c in newItemColors" :key="c" :value="c">{{ c }}</option>
+                        <option value="__new__">+ New color...</option>
+                      </select>
+                      <TextInput v-else v-model="newItem.color" placeholder="e.g. Green" />
+                    </label>
+                    <label class="block">
+                      <span class="mb-1 block text-2xs text-ink-gray-5">Size</span>
+                      <select v-if="!newItem.sizeNew" :value="newItem.size" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" @change="$event.target.value === '__new__' ? (newItem.sizeNew = true, newItem.size = '') : (newItem.size = $event.target.value)">
+                        <option value="">-</option>
+                        <option v-for="z in newItemSizes" :key="z" :value="z">{{ z }}</option>
+                        <option value="__new__">+ New size...</option>
+                      </select>
+                      <TextInput v-else v-model="newItem.size" placeholder="e.g. 3XL" />
+                    </label>
+                  </div>
+                  <div class="grid grid-cols-2 gap-2">
+                    <label class="block">
+                      <span class="mb-1 block text-2xs text-ink-gray-5">Type</span>
+                      <select v-model="newItem.group" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm">
+                        <option value="">Not sure</option>
+                        <option v-for="g in newItem.options.groups" :key="g" :value="g">{{ groupLabel(g) }}</option>
+                      </select>
+                    </label>
+                    <TextInput v-model="newItem.collection" label="Collection" />
+                  </div>
+                  <div class="rounded-4 border border-outline-gray-2 bg-surface-base p-2">
+                    <p class="text-2xs text-ink-gray-5">Item name</p>
+                    <p class="text-sm-semibold">{{ newItemName || '-' }}</p>
+                  </div>
+                  <TextInput v-model="newItem.qty" type="number" label="Quantity" />
+                  <label class="flex items-center gap-2 text-xs"><input v-model="newItem.flag" type="checkbox" /> Flag for review</label>
+                  <TextInput v-if="newItem.flag" v-model="newItem.note" label="What should Soy Ops check?" />
+                  <div class="grid grid-cols-2 gap-2">
+                    <Button label="Cancel" variant="outline" theme="gray" @click="newItem = null" />
+                    <Button label="Create and add" variant="solid" theme="green" :loading="newItem.busy" @click="submitNewItem" />
                   </div>
                 </div>
-                <div class="flex items-center justify-between"><p class="text-sm-semibold">Expected items</p><span class="text-xs text-ink-green-6">{{ receiveDone }} / {{ receiveTotal }} confirmed</span></div>
+
+                <div class="flex items-center justify-between">
+                  <p class="text-sm-semibold">In this package</p>
+                  <Button v-if="receiveStageableRows.some((l) => stagingBinInputs[l.sku])" label="Stage all to suggested bins" variant="ghost" theme="green" size="sm" :loading="pickActionLoading" @click="stageAllSuggested" />
+                </div>
                 <div class="rounded-4 border border-outline-gray-2">
-                  <div v-for="item in data.receive.package.items" :key="item.sku" class="wms-pick-row flex items-center gap-2 border-b border-outline-gray-1 p-2 last:border-0" @click="openReceiveDrawer(item)">
-                    <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
-                    <div class="min-w-0 flex-1">
-                      <div class="flex items-center gap-1.5">
-                        <p class="truncate text-sm-semibold">{{ item.name }}</p>
-                        <Badge v-if="item.status && !['Expected', 'Good'].includes(item.status)" :label="item.status" theme="red" variant="subtle" />
+                  <div v-for="item in receiveLines" :key="item.sku" class="space-y-2 border-b border-outline-gray-1 p-3 last:border-0">
+                    <div class="flex items-center gap-2">
+                      <div class="wms-item-thumb shrink-0"><img v-if="item.image" :src="item.image" :alt="item.name" /><span v-else class="lucide-shirt size-5 text-ink-green-6" aria-hidden="true" /></div>
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-1.5">
+                          <p class="truncate text-sm-semibold">{{ item.name }}</p>
+                          <Badge v-if="item.needs_review" label="Review" theme="orange" variant="subtle" />
+                          <Badge v-if="['Damaged', 'Hold'].includes(item.status)" :label="item.status" theme="red" variant="subtle" />
+                        </div>
+                        <p class="truncate text-2xs text-ink-gray-5">{{ item.sku }}<template v-if="Number(item.quantity) > 0"> - expected {{ item.quantity }}</template></p>
                       </div>
-                      <p class="truncate text-xs text-ink-gray-5">{{ item.sku }}</p>
-                      <div class="wms-progress mt-1.5" :class="{ 'is-complete': item.received >= item.quantity }">
-                        <span :style="{ width: (item.quantity ? Math.min(100, (item.received / item.quantity) * 100) : 0) + '%' }" />
-                      </div>
+                      <input v-if="!item.assigned_bin" :value="item.received" type="number" min="0" inputmode="numeric" class="w-16 rounded-4 border border-outline-gray-2 bg-surface-base p-1.5 text-center text-sm" :aria-label="`Quantity of ${item.sku}`" @change="setLineQty(item, $event.target.value)" />
+                      <p v-else class="w-16 text-center text-sm-semibold">{{ item.received }}</p>
+                      <Button icon="lucide-ellipsis-vertical" aria-label="Line options" variant="ghost" theme="gray" size="sm" @click="openLineMenu(item)" />
                     </div>
-                    <div class="flex items-center gap-1" @click.stop>
-                      <Button label="-" variant="outline" theme="gray" size="sm" class="!min-w-8" :loading="pickActionLoading" :disabled="!item.received || item.status === 'Missing' || pickMutationLoading" @click="unreceiveItem(item)" />
-                      <p class="min-w-12 text-center text-sm-semibold">{{ item.received }} / {{ item.quantity }}</p>
-                      <Button label="+" variant="outline" theme="green" size="sm" class="!min-w-8" :loading="pickActionLoading" :disabled="item.received >= item.quantity || item.status === 'Missing' || pickMutationLoading" @click="receiveItem(item)" />
+                    <Badge v-if="item.assigned_bin" :label="`Staged - ${shortBin(item.assigned_bin)}`" theme="green" variant="subtle" />
+                    <div v-else class="flex items-center gap-2">
+                      <select :value="stagingBinInputs[item.sku] || ''" class="min-w-0 flex-1 rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" @change="stagingBinInputs[item.sku] = $event.target.value; stageBinChosen(item, $event.target.value)">
+                        <option value="" disabled>Choose bin</option>
+                        <optgroup v-if="binGroups(stageBins, item.sku).held.length" label="Already holds this item">
+                          <option v-for="b in binGroups(stageBins, item.sku).held" :key="b.warehouse" :value="b.warehouse">{{ b.code }} - {{ b.held[item.sku] }} here</option>
+                        </optgroup>
+                        <optgroup label="Other bins">
+                          <option v-for="b in binGroups(stageBins, item.sku).other" :key="b.warehouse" :value="b.warehouse">{{ b.code }}{{ b.on_hand ? ` - ${b.on_hand} on hand` : ' - empty' }}</option>
+                        </optgroup>
+                        <option value="__new__">+ New bin...</option>
+                      </select>
+                      <button type="button" class="lucide-scan-line size-4 shrink-0 text-ink-gray-5" aria-label="Scan bin with camera" @click="openStageScanner(item)" />
+                      <Button label="Stage" variant="solid" theme="green" size="sm" :loading="pickActionLoading" :disabled="!stagingBinInputs[item.sku] || pickMutationLoading" @click="stageItem(item, stagingBinInputs[item.sku])" />
                     </div>
                   </div>
+                  <p v-if="!receiveLines.length" class="p-4 text-center text-sm text-ink-gray-5">Scan the first item in the box.</p>
                 </div>
-                <Button label="Mark all as confirmed" variant="outline" theme="green" class="w-full" :loading="pickActionLoading" :disabled="receiveConfirmed || pickMutationLoading" @click="receiveAll" />
-                <Button label="Continue to staging" variant="solid" theme="green" class="w-full" @click="receiveMode = 'stage'" />
+                <Button label="Finish" variant="solid" theme="green" class="w-full" :disabled="!receiveLines.length || receiveStageableRows.length > 0 || pickMutationLoading" @click="receiveMode = 'finish'" />
+                <p v-if="receiveLines.length && receiveStageableRows.length" class="text-center text-2xs text-ink-gray-5">Stage every line into a bin to finish.</p>
               </template>
 
-              <Button v-if="receiveMode !== 'tasks'" label="Open receiving record" variant="ghost" theme="gray" class="w-full" @click="openDesk(data.receive.package.route || data.receive.asn.route)" />
+              <div v-if="lineMenu" class="wms-create-overlay">
+                <div class="wms-create-sheet">
+                  <div class="flex items-center justify-between border-b border-outline-gray-2 px-3 py-2.5">
+                    <p class="truncate text-sm-semibold">{{ lineMenu.item.name }}</p>
+                    <Button icon="lucide-x" aria-label="Close" variant="ghost" theme="gray" @click="lineMenu = null" />
+                  </div>
+                  <div class="space-y-3 overflow-y-auto p-3">
+                    <div>
+                      <p class="mb-1 text-2xs text-ink-gray-5">Condition</p>
+                      <div class="grid grid-cols-3 gap-2">
+                        <Button v-for="c in ['Good', 'Damaged', 'Hold']" :key="c" :label="c" :variant="(lineMenu.item.status === c) || (c === 'Good' && !['Damaged', 'Hold'].includes(lineMenu.item.status)) ? 'solid' : 'outline'" :theme="c === 'Good' ? 'green' : 'gray'" size="sm" :disabled="!!lineMenu.item.assigned_bin" @click="lineSetCondition(c)" />
+                      </div>
+                      <p class="mt-1 text-2xs text-ink-gray-5">Damaged goes to the client's Damaged area when staged.</p>
+                    </div>
+                    <label class="block">
+                      <span class="mb-1 block text-2xs text-ink-gray-5">Type (item group)</span>
+                      <select v-model="lineMenu.group" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm">
+                        <option v-for="g in lineMenu.groups" :key="g" :value="g">{{ groupLabel(g) }}</option>
+                      </select>
+                    </label>
+                    <Button label="Change type and flag for review" variant="outline" theme="green" class="w-full" :disabled="!lineMenu.group || lineMenu.group === lineMenu.item.item_group" @click="lineSetGroup" />
+                    <TextInput v-model="lineMenu.reason" label="Something else wrong? (color, size, name)" placeholder="e.g. Label says navy, item is black" />
+                    <Button label="Flag for review" variant="outline" theme="gray" class="w-full" @click="lineFlag" />
+                    <Button v-if="!lineMenu.item.assigned_bin" label="Remove line" variant="ghost" theme="red" class="w-full" @click="setLineQty(lineMenu.item, 0); lineMenu = null" />
+                  </div>
+                </div>
+              </div>
+
+              <Button v-if="receiveMode !== 'tasks'" label="Open receiving record" variant="ghost" theme="gray" class="w-full" @click="openDesk(data.receive.package.route)" />
             </section>
 
             <section v-else-if="screen === 'pick'" class="space-y-3">
@@ -1430,8 +1660,9 @@ onBeforeUnmount(() => {
                   <div class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
                     <p class="text-sm-semibold text-ink-green-7">Scan or Enter SKU</p>
                     <div class="mt-3 flex items-end gap-2">
-                      <TextInput v-model="pickScanValue" label="Scan item or bin barcode" class="flex-1" @keyup.enter="scanPickItem" />
-                      <Button icon="lucide-scan-line" aria-label="Scan item or bin barcode" variant="outline" theme="green" @click="openScanner('sku')" />
+                      <TextInput v-model="pickScanValue" label="Scan item or bin barcode" class="flex-1" @keyup.enter="scanPickItem">
+                        <template #suffix><button type="button" class="lucide-scan-line mr-2 size-4 text-ink-gray-5" aria-label="Scan with camera" @click="openScanner('sku')" /></template>
+                      </TextInput>
                     </div>
                     <div class="mt-3 grid grid-cols-2 gap-2">
                       <Button label="Confirm scan" variant="solid" theme="green" :loading="pickActionLoading && pickActionTag === 'scan'" :disabled="pickMutationLoading" @click="scanPickItem" />
@@ -1515,8 +1746,9 @@ onBeforeUnmount(() => {
                   <div class="rounded-4 border border-outline-green-3 bg-surface-green-1 p-3">
                     <p class="text-sm-semibold text-ink-green-7">Verify contents</p>
                     <div class="mt-3 flex items-end gap-2">
-                      <TextInput v-model="packScanValue" label="Scan barcode or enter SKU" class="flex-1" @keyup.enter="scanPackItem" />
-                      <Button icon="lucide-scan-line" aria-label="Scan item barcode" variant="outline" theme="green" @click="openScanner('pack-sku')" />
+                      <TextInput v-model="packScanValue" label="Scan barcode or enter SKU" class="flex-1" @keyup.enter="scanPackItem">
+                        <template #suffix><button type="button" class="lucide-scan-line mr-2 size-4 text-ink-gray-5" aria-label="Scan with camera" @click="openScanner('pack-sku')" /></template>
+                      </TextInput>
                     </div>
                     <Button label="Confirm scan" variant="solid" theme="green" class="mt-3 w-full" :loading="packItemRequest.loading" :disabled="packMutationLoading" @click="scanPackItem" />
                   </div>
@@ -1651,6 +1883,16 @@ onBeforeUnmount(() => {
                     <p class="text-sm-semibold">{{ item.packed }} / {{ item.quantity }}</p>
                   </div>
                 </div>
+                <div v-if="!data.ship.tracking_number" class="rounded-4 border border-outline-gray-2 bg-surface-base p-3">
+                  <div class="flex items-center justify-between"><p class="text-sm-semibold">Ship to</p><span v-if="data.ship.ship_to_source === 'order'" class="text-2xs text-ink-green-6">Prefilled from the order</span></div>
+                  <div class="mt-2 grid grid-cols-2 gap-2">
+                    <TextInput v-for="[key, label] in shipToFields" :key="key" v-model="shipForm[key]" :label="label" :class="['name', 'company', 'line_1', 'line_2', 'phone', 'email'].includes(key) ? 'col-span-2' : ''" />
+                  </div>
+                  <p class="mt-3 text-sm-semibold">Parcel</p>
+                  <div class="mt-2 grid grid-cols-2 gap-2">
+                    <TextInput v-for="[key, label] in parcelFields" :key="key" v-model="shipForm[key]" :label="label" type="number" />
+                  </div>
+                </div>
                 <Button v-if="!data.ship.tracking_number" label="Generate shipping label" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="generateLabel" />
                 <div v-else class="rounded-4 border border-outline-gray-2 p-3"><p class="text-2xs text-ink-gray-5">Shipping label</p><p class="mt-1 text-lg-semibold">{{ data.ship.tracking_number }}</p><p class="mt-1 text-xs text-ink-gray-5">{{ data.ship.carrier || 'Carrier' }} - {{ data.ship.name }}</p><a v-if="data.ship.label_url" :href="data.ship.label_url" target="_blank" rel="noopener" class="mt-2 inline-block text-xs text-ink-green-6 underline">View / print label</a></div>
                 <Button v-if="data.ship.tracking_number" label="Mark shipment shipped" variant="solid" theme="green" class="w-full" :loading="pickActionLoading" :disabled="pickMutationLoading" @click="completeShipment" />
@@ -1770,12 +2012,29 @@ onBeforeUnmount(() => {
             </div>
             <div class="space-y-3 overflow-y-auto p-3">
               <p class="text-xs text-ink-gray-5">No items yet - just who this box belongs to. Scan what's actually inside once the package is open.</p>
-              <TextInput v-model="startReceiveCustomer" label="Customer" placeholder="e.g. Acme Co" />
-              <TextInput v-model="startReceiveWarehouse" label="Warehouse (blank = default receiving zone)" />
+              <label class="block">
+                <span class="mb-1 block text-2xs text-ink-gray-5">Client</span>
+                <select v-model="startReceiveCustomer" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" :disabled="!!startReceiveNew">
+                  <option value="" disabled>Choose client</option>
+                  <option v-for="name in startReceiveClients" :key="name" :value="name">{{ name }}</option>
+                </select>
+              </label>
+              <div v-if="startReceiveCanCreate && !startReceiveNew">
+                <Button label="+ Create new client" variant="ghost" theme="green" size="sm" @click="startReceiveNew = { name: '', busy: false, setting: '' }" />
+              </div>
+              <div v-if="startReceiveNew" class="space-y-2 rounded-4 border border-outline-gray-2 bg-surface-gray-1 p-3">
+                <p class="text-xs-semibold">New client</p>
+                <TextInput v-model="startReceiveNew.name" label="Client name" placeholder="e.g. Acme Co" :disabled="startReceiveNew.busy" />
+                <p v-if="startReceiveNew.setting" class="text-xs text-ink-gray-5">Setting up {{ startReceiveNew.setting }} - warehouses and first bin. This takes a few seconds.</p>
+                <div class="grid grid-cols-2 gap-2">
+                  <Button label="Cancel" variant="outline" theme="gray" :disabled="startReceiveNew.busy" @click="startReceiveNew = null" />
+                  <Button label="Create client" variant="solid" theme="green" :loading="startReceiveNew.busy" @click="createStartReceiveClient" />
+                </div>
+              </div>
               <TextInput v-model="startReceiveTracking" label="Tracking number (optional)" placeholder="Scan or type if the box has one" />
             </div>
             <div class="border-t border-outline-gray-2 p-3">
-              <Button label="Start receiving" variant="solid" theme="green" class="w-full" :loading="startReceiveBusy" @click="submitStartReceiving" />
+              <Button label="Start receiving" variant="solid" theme="green" class="w-full" :loading="startReceiveBusy" :disabled="!!startReceiveNew" @click="submitStartReceiving" />
             </div>
           </div>
         </div>
@@ -1884,9 +2143,20 @@ onBeforeUnmount(() => {
                     <Button icon="lucide-plus" aria-label="Increase by 1" size="lg" variant="outline" theme="gray" @click="binMoveQty = String(Number(binMoveQty || 0) + 1)" />
                   </div>
                 </div>
-                <TextInput v-model="binMoveTarget" label="Destination bin" placeholder="Scan or type e.g. A2" />
-                <Button label="+ New bin" variant="ghost" theme="green" size="sm" @click="openNewBin(true)" />
-                <p v-if="binMoveTarget" class="text-xs text-ink-gray-5">{{ activeBinAction.location.warehouse }} → {{ binMoveTarget }}</p>
+                <label class="block">
+                  <span class="mb-1 block text-2xs text-ink-gray-5">Destination bin</span>
+                  <select v-model="binMoveTarget" class="w-full rounded-4 border border-outline-gray-2 bg-surface-base p-2 text-sm" @change="moveBinChosen($event.target.value)">
+                    <option value="" disabled>Choose bin</option>
+                    <optgroup v-if="binGroups(moveBins, selectedInventoryItem?.item_code, activeBinAction.location.warehouse).held.length" label="Already holds this item">
+                      <option v-for="b in binGroups(moveBins, selectedInventoryItem?.item_code, activeBinAction.location.warehouse).held" :key="b.warehouse" :value="b.warehouse">{{ b.code }} - {{ b.held[selectedInventoryItem?.item_code] }} here</option>
+                    </optgroup>
+                    <optgroup label="Other bins">
+                      <option v-for="b in binGroups(moveBins, selectedInventoryItem?.item_code, activeBinAction.location.warehouse).other" :key="b.warehouse" :value="b.warehouse">{{ b.code }}{{ b.on_hand ? ` - ${b.on_hand} on hand` : ' - empty' }}</option>
+                    </optgroup>
+                    <option value="__new__">+ New bin...</option>
+                  </select>
+                </label>
+                <p v-if="binMoveTarget" class="text-xs text-ink-gray-5">{{ shortBin(activeBinAction.location.warehouse) }} → {{ shortBin(binMoveTarget) }}</p>
               </template>
             </div>
             <div class="border-t border-outline-gray-2 p-3">
@@ -2012,7 +2282,7 @@ onBeforeUnmount(() => {
                 <Button v-if="myTasksClaimedByOther" label="In progress by someone else" variant="outline" theme="gray" class="w-full" disabled />
                 <Button v-else :label="myTasksClaimedByMe ? 'Continue' : 'Start'" variant="solid" theme="green" class="w-full" :loading="myTasksClaimLoading || pickActionLoading" @click="startDrawerTask" />
                 <Button v-if="myTasksClaimedByMe" label="Release back to queue" variant="ghost" theme="red" class="w-full" :loading="myTasksClaimLoading || pickActionLoading" @click="releaseDrawerTask" />
-                <Button v-if="myTasksDrawerTask.kind !== 'Receive' && !myTasksClaimedByOther" label="Cancel task" variant="ghost" theme="red" class="w-full" :loading="myTasksClaimLoading || pickActionLoading" @click="cancelDrawerTask" />
+                <Button v-if="!myTasksClaimedByOther" label="Cancel task" variant="ghost" theme="red" class="w-full" :loading="myTasksClaimLoading || pickActionLoading" @click="cancelDrawerTask" />
               </template>
             </div>
           </div>

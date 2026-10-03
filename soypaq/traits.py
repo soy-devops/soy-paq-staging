@@ -45,6 +45,48 @@ def ensure_fields() -> None:
 			}
 		)
 		previous = fieldname
+	fields.append(
+		{
+			"fieldname": "soy_max_order_qty",
+			"fieldtype": "Int",
+			"label": "Max Order Qty",
+			"insert_after": previous,
+			"description": "Store owner's cap on units per order from the portal. Blank/0 means no limit.",
+			"non_negative": 1,
+		}
+	)
+	fields += [
+		{
+			"fieldname": "soy_review_section",
+			"fieldtype": "Section Break",
+			"label": "Review",
+			"insert_after": "soy_max_order_qty",
+		},
+		{
+			"fieldname": "soy_needs_review",
+			"fieldtype": "Check",
+			"label": "Needs Review",
+			"insert_after": "soy_review_section",
+			"in_standard_filter": 1,
+			"description": "Set when the floor flags this item (new at receive, wrong group, and so on). Untick once Soy Ops has checked it.",
+		},
+		{
+			"fieldname": "soy_review_reason",
+			"fieldtype": "Small Text",
+			"label": "Review Reason",
+			"insert_after": "soy_needs_review",
+			"depends_on": "soy_needs_review",
+		},
+		{
+			"fieldname": "soy_flagged_by",
+			"fieldtype": "Link",
+			"label": "Flagged By",
+			"options": "User",
+			"insert_after": "soy_review_reason",
+			"read_only": 1,
+			"depends_on": "soy_needs_review",
+		},
+	]
 	create_custom_fields({"Item": fields}, update=True)
 
 
@@ -54,7 +96,7 @@ def _title(text: str) -> str:
 
 
 def parse_name(item_name: str) -> dict:
-	"""Best-effort split of "COSMIC ENTITY TEE PINK L" into product / color / size. Blanks stay blank."""
+	"""Best-effort split of "BASIC LOGO TEE PINK L" into product / color / size. Blanks stay blank."""
 	tokens = (item_name or "").split()
 	traits = {"soy_product": "", "soy_color": "", "soy_size": "", "soy_collection": ""}
 	if tokens and tokens[-1].upper() in SIZES:
@@ -69,7 +111,7 @@ def parse_name(item_name: str) -> dict:
 
 
 def color_from_code(item_code: str) -> str:
-	"""Color from an item code such as HMN-BLK-CE01-L or HMN-STL-BLU-M (first segment that is a known color)."""
+	"""Color from an item code such as EXC-BLK-BT01-L or EXC-TEE-BLU-M (first segment that is a known color)."""
 	for part in (item_code or "").upper().split("-")[1:]:
 		if part in COLOR_CODES:
 			return COLOR_CODES[part]

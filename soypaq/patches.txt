@@ -14,3 +14,5 @@ soypaq.patches.add_item_traits
 soypaq.patches.normalize_item_groups
 soypaq.patches.add_tenant_onboarding
 soypaq.patches.add_onboarding_workspace
+soypaq.patches.add_item_review_flag
+soypaq.patches.add_item_name_template

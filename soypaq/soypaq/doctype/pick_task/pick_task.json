@@ -46,7 +46,8 @@
   "billing_journal_entry",
   "medusa_section",
   "medusa_order_number",
-  "medusa_order_id"
+  "medusa_order_id",
+  "medusa_shipping_address"
  ],
  "fields": [
   {
@@ -275,6 +276,13 @@
    "read_only": 1,
    "no_copy": 1,
    "search_index": 1
+  },
+  {
+   "fieldname": "medusa_shipping_address",
+   "fieldtype": "Long Text",
+   "label": "Medusa Shipping Address (JSON)",
+   "read_only": 1,
+   "no_copy": 1
   }
  ],
  "grid_page_length": 50,

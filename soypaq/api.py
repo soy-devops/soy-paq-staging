@@ -32,7 +32,7 @@ DONE_STATUSES = {
 	"Pick Task": ["Completed", "Cancelled"],
 	"Pack Task": ["Completed", "Cancelled"],
 	"Shipment Task": ["Shipped", "Cancelled"],
-	"Inbound Package": ["Stored", "Consolidated", "Shipped", "Delivered"],
+	"Inbound Package": ["Stored", "Consolidated", "Shipped", "Delivered", "Cancelled"],
 }
 
 
@@ -126,11 +126,12 @@ def _list_shipment_tasks(limit: int = 50) -> list[dict]:
 def _list_receive_packages(limit: int = 50) -> list[dict]:
 	rows = frappe.get_all(
 		"Inbound Package",
-		filters={"status": ["!=", "Exception"]},
+		filters={"status": ["not in", ["Exception", "Cancelled"]]},
 		fields=[
 			"name",
 			"external_tracking_number",
 			"customer",
+			"assigned_user",
 			"status",
 			"carrier",
 			"modified",
@@ -151,8 +152,9 @@ def _list_receive_packages(limit: int = 50) -> list[dict]:
 			order_by="parent asc, idx asc",
 			limit_page_length=0,
 		):
-			bucket = counts.setdefault(child.parent, {"lines": 0, "confirmed": 0, "staged": 0})
+			bucket = counts.setdefault(child.parent, {"lines": 0, "confirmed": 0, "staged": 0, "expected": 0})
 			bucket["lines"] += 1
+			bucket["expected"] += flt(child.quantity)
 			if flt(child.received_qty) >= flt(child.quantity) or child.condition == "Missing":
 				bucket["confirmed"] += 1
 			if child.assigned_bin or child.condition == "Missing":
@@ -176,7 +178,9 @@ def _list_receive_packages(limit: int = 50) -> list[dict]:
 			"carrier": r.carrier or "",
 			"target_warehouse": r.target_warehouse or "",
 			"asn": r.inbound_asn or "",
+			"assigned_to": _user(r.assigned_user),
 			"lines": counts.get(r.name, {}).get("lines", 0),
+			"expected_qty": counts.get(r.name, {}).get("expected", 0),
 			"confirmed_lines": counts.get(r.name, {}).get("confirmed", 0),
 			"staged_lines": counts.get(r.name, {}).get("staged", 0),
 			"image": item_images.get(first_item_by_parent.get(r.name)),
@@ -503,16 +507,18 @@ def _create_stock_entry(entry_type: str, items: list[dict], company: str | None 
 	if not doc.company:
 		frappe.throw("Could not determine which company this stock move belongs to.")
 	for item in items:
-		doc.append(
-			"items",
-			{
-				"item_code": item["item_code"],
-				"qty": item["qty"],
-				"uom": item.get("uom") or frappe.db.get_value("Item", item["item_code"], "stock_uom"),
-				"s_warehouse": item.get("s_warehouse"),
-				"t_warehouse": item.get("t_warehouse"),
-			},
-		)
+		row = {
+			"item_code": item["item_code"],
+			"qty": item["qty"],
+			"uom": item.get("uom") or frappe.db.get_value("Item", item["item_code"], "stock_uom"),
+			"s_warehouse": item.get("s_warehouse"),
+			"t_warehouse": item.get("t_warehouse"),
+		}
+		# Received stock is the client's, not Soy's: an item with no cost yet (a new item, price 0 by
+		# default) is received at zero value instead of blocking the receipt. Same rule as adjust_bin_qty.
+		if entry_type == "Material Receipt" and not flt(frappe.db.get_value("Item", item["item_code"], "valuation_rate")):
+			row["allow_zero_valuation_rate"] = 1
+		doc.append("items", row)
 	doc.insert()
 	doc.submit()
 	return doc
@@ -901,7 +907,7 @@ def _item_rows(doc, fieldname: str, quantity_field: str) -> list[dict]:
 		item = frappe.db.get_value(
 			"Item",
 			item_code,
-			["item_name", "image", "stock_uom", "disabled", "modified"],
+			["item_name", "image", "stock_uom", "disabled", "modified", "item_group", "soy_needs_review"],
 			as_dict=True,
 		)
 		rows.append(
@@ -917,6 +923,8 @@ def _item_rows(doc, fieldname: str, quantity_field: str) -> list[dict]:
 				"packed": row.get("packed_qty") or 0,
 				"shipped": row.get("shipped_qty") or 0,
 				"received": row.get("received_qty") or 0,
+				"item_group": item.item_group if item else "",
+				"needs_review": bool(item.soy_needs_review) if item else False,
 				"assigned_bin": row.get("assigned_bin") or "",
 				"source_warehouse": row.get("source_warehouse") or "",
 				"source_bin": row.get("source_bin") or "",
@@ -1118,6 +1126,7 @@ CLAIM_FIELD = {
 	"Pick Task": "assigned_to",
 	"Pack Task": "assigned_user",
 	"Shipment Task": "assigned_user",
+	"Inbound Package": "assigned_user",
 }
 
 
@@ -1129,7 +1138,7 @@ def _claimable_task(doctype: str, name: str):
 	doc = frappe.get_doc(doctype, name)
 	if not doc.has_permission("write"):
 		frappe.throw(f"You do not have permission to claim {doctype} {name}.", frappe.PermissionError)
-	if doc.get("status") in ("Completed", "Cancelled", "Shipped"):
+	if doc.get("status") in ("Completed", "Cancelled", "Shipped", "Stored", "Consolidated", "Delivered"):
 		frappe.throw(f"{doctype} {name} is already {doc.get('status')}.")
 	return doc
 
@@ -1145,18 +1154,20 @@ def _other_active_claim(user: str, exclude_doctype: str, exclude_name: str) -> d
 		("Pick Task", "assigned_to", "Pick", ("Completed", "Cancelled")),
 		("Pack Task", "assigned_user", "Pack", ("Completed", "Cancelled")),
 		("Shipment Task", "assigned_user", "Ship", ("Shipped", "Cancelled")),
+		("Inbound Package", "assigned_user", "Receive", DONE_STATUSES["Inbound Package"]),
 	]
 	for doctype, field, kind, done_statuses in checks:
 		rows = frappe.get_all(
 			doctype,
 			filters={field: user, "status": ["not in", done_statuses]},
-			fields=["name", "sales_order"],
+			fields=["name", "sales_order"] if doctype != "Inbound Package" else ["name", "external_tracking_number"],
 			limit_page_length=2,
 		)
 		for row in rows:
 			if doctype == exclude_doctype and row.name == exclude_name:
 				continue
-			return {"kind": kind, "reference": row.sales_order or row.name, "name": row.name}
+			reference = row.get("sales_order") or row.get("external_tracking_number") or row.name
+			return {"kind": kind, "reference": reference, "name": row.name}
 	return None
 
 
@@ -1662,6 +1673,11 @@ def get_mobile_bootstrap(
 			},
 			"package": {
 				"name": inbound_package.name if inbound_package else "",
+				"customer": inbound_package.get("customer") if inbound_package else "",
+				"stock_entry": inbound_package.get("stock_entry_reference") if inbound_package else "",
+				"stock_entry_route": _route("Stock Entry", inbound_package.stock_entry_reference)
+				if inbound_package and inbound_package.get("stock_entry_reference")
+				else "",
 				"tracking": inbound_package.get("external_tracking_number") if inbound_package else "",
 				"warehouse": inbound_package.get("target_warehouse") if inbound_package else "",
 				"bin": inbound_package.get("scan_bin") if inbound_package else "",
@@ -1746,6 +1762,7 @@ def get_mobile_bootstrap(
 			"carrier": shipment_task.get("carrier") if shipment_task else "",
 			"tracking_number": shipment_task.get("tracking_number") if shipment_task else "",
 			"label_url": shipment_task.get("shipping_label_url") if shipment_task else "",
+			**(_ship_form(shipment_task) if shipment_task else {"ship_to": {}, "ship_to_source": "", "parcel": {}}),
 			"name": shipment_task.name if shipment_task else "",
 			"customer": shipment_task.get("customer") if shipment_task else "",
 			"reference": (shipment_task.get("sales_order") or shipment_task.name) if shipment_task else "",
@@ -1842,6 +1859,7 @@ def start_receiving_session(customer: str, target_warehouse: str = None, trackin
 			"name",
 		)
 		if existing:
+			claim_task("Inbound Package", existing)
 			return {
 				"name": existing,
 				"resumed": True,
@@ -1851,10 +1869,12 @@ def start_receiving_session(customer: str, target_warehouse: str = None, trackin
 	# Resolved by zone, not via DEFAULT_COMPANY: the company must be resolvable per
 	# package, never assumed site-wide, and the public build's placeholder company
 	# matches nothing on a real site.
-	target_warehouse = (target_warehouse or "").strip() or _zone_warehouse("Receiving")
+	# The client's own Receiving zone (tenant Company shares the Customer's name); never another client's.
+	tenant_company = customer if frappe.db.exists("Company", customer) else None
+	target_warehouse = (target_warehouse or "").strip() or _zone_warehouse("Receiving", company=tenant_company)
 	if not target_warehouse:
 		frappe.throw(
-			"No receiving warehouse was found. Pass target_warehouse explicitly, or create a "
+			f"{customer} has no Receiving warehouse yet. Finish its setup, or create a "
 			"leaf warehouse whose name contains 'Receiving'."
 		)
 
@@ -1867,7 +1887,7 @@ def start_receiving_session(customer: str, target_warehouse: str = None, trackin
 	if tracking_number:
 		package.external_tracking_number = tracking_number
 	package.insert()
-	_publish_task_update(package)
+	claim_task("Inbound Package", package.name)
 	return {"name": package.name, "resumed": False, "route": _route("Inbound Package", package.name)}
 
 
@@ -1989,11 +2009,271 @@ def receive_scan(package_name: str, code: str, quantity: float = 1) -> dict:
 	item_code = _resolve_scanned_item(code)
 	if not item_code:
 		return {"resolved": False, "code": code, "package": doc.name}
+	# Item codes are global, but an item belongs to one client (through its item group). Never receive
+	# another client's item into this client's package.
+	owner = _item_client(item_code)
+	if owner and doc.get("customer") and owner != doc.get("customer"):
+		frappe.throw(f"{code} is {owner}'s item ({item_code}), but this package is for {doc.get('customer')}.")
 
 	result = receive_item(doc.name, item_code, quantity)
 	result["resolved"] = True
 	result["tier"] = 1
 	return result
+
+
+# --- New items at receive: naming standard and prefill (RECEIVE_WORKFLOW_PROJECT.md) ---------------
+DEFAULT_ITEM_NAME_TEMPLATE = "{PRODUCT} {COLOR} {SIZE}"
+SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OS"]
+
+
+def _item_client(item_code: str) -> str | None:
+	"""The client an item belongs to: the Customer whose item group sits above the item's group."""
+	group = frappe.db.get_value("Item", item_code, "item_group")
+	seen = set()
+	while group and group not in seen and group != "All Item Groups":
+		if frappe.db.exists("Customer", group):
+			return group
+		seen.add(group)
+		group = frappe.db.get_value("Item Group", group, "parent_item_group")
+	return None
+
+
+def _client_groups(customer: str) -> list[str]:
+	"""The client's product-type groups (leaf groups under the client's own item group)."""
+	if not customer or not frappe.db.exists("Item Group", customer):
+		return []
+	bounds = frappe.db.get_value("Item Group", customer, ["lft", "rgt"], as_dict=True)
+	return frappe.get_all(
+		"Item Group",
+		filters={"lft": [">", bounds.lft], "rgt": ["<", bounds.rgt], "is_group": 0},
+		pluck="name",
+		order_by="name asc",
+	)
+
+
+def _client_items(customer: str) -> list[dict]:
+	groups = _client_groups(customer)
+	if not groups:
+		return []
+	return frappe.get_all(
+		"Item",
+		filters={"item_group": ["in", groups]},
+		fields=["name", "item_name", "item_group", "soy_product", "soy_color", "soy_size", "soy_collection"],
+		order_by="name asc",
+		limit_page_length=0,
+	)
+
+
+def _name_template(customer: str | None) -> str:
+	template = customer and frappe.db.get_value("Customer", customer, "soy_item_name_template")
+	return template or DEFAULT_ITEM_NAME_TEMPLATE
+
+
+def _render_item_name(template: str, product: str, color: str, size: str) -> str:
+	name = template.replace("{PRODUCT}", product or "").replace("{COLOR}", color or "").replace("{SIZE}", size or "")
+	return re.sub(r"\s+", " ", name).strip().upper()
+
+
+def _related_item(code: str, items: list[dict]) -> tuple[dict | None, int | None]:
+	"""An existing item whose code differs from `code` in exactly one dash-separated segment
+	(EXC-BT-PNK-XXL vs EXC-BT-PNK-L). Prefers a difference in the last segment (a new size)."""
+	parts = code.upper().split("-")
+	if len(parts) < 2:
+		return None, None
+	best = None
+	for item in items:
+		other = item.name.upper().split("-")
+		if len(other) != len(parts):
+			continue
+		diffs = [i for i, (a, b) in enumerate(zip(parts, other, strict=True)) if a != b]
+		if len(diffs) != 1:
+			continue
+		if diffs[0] == len(parts) - 1:
+			return item, diffs[0]
+		best = best or (item, diffs[0])
+	return best or (None, None)
+
+
+@frappe.whitelist()
+def receive_item_suggestion(package_name: str, code: str) -> dict:
+	"""What the confirm sheet needs for a barcode that is not in the catalogue: the client's existing
+	products, colors, sizes and groups to pick from, and a prefill from a related item when one exists."""
+	from soypaq.traits import COLOR_CODES
+
+	doc = _writable_package(package_name)
+	code = (code or "").strip()
+	customer = doc.get("customer")
+	items = _client_items(customer)
+	products = {}
+	for item in items:
+		if item.soy_product and item.soy_product not in products:
+			products[item.soy_product] = {
+				"product": item.soy_product,
+				"group": item.item_group,
+				"collection": item.soy_collection or "",
+			}
+	colors = sorted({item.soy_color for item in items if item.soy_color})
+	sizes = sorted(
+		{item.soy_size for item in items if item.soy_size},
+		key=lambda s: (SIZE_ORDER.index(s) if s in SIZE_ORDER else 99, s),
+	)
+	# Offer product types only: not the holding group, nor a leftover season group (Summer_2026).
+	groups = [g for g in _client_groups(customer) if not g.endswith(" - Unsorted") and not re.fullmatch(r"[A-Za-z]+_\d{4}", g)]
+	prefill = {"product": "", "color": "", "size": "", "group": "", "collection": ""}
+	related, position = _related_item(code, items)
+	if related:
+		prefill = {
+			"product": related.soy_product or "",
+			"color": related.soy_color or "",
+			"size": related.soy_size or "",
+			"group": related.item_group,
+			"collection": related.soy_collection or "",
+		}
+		segment = code.upper().split("-")[position]
+		if position == len(code.split("-")) - 1:
+			prefill["size"] = segment
+		else:
+			prefill["color"] = COLOR_CODES.get(segment, segment.title())
+	return {
+		"code": code,
+		"barcode_type": _barcode_type(code),
+		"template": _name_template(customer),
+		"prefill": prefill,
+		"related": related.name if related else "",
+		"products": list(products.values()),
+		"colors": colors,
+		"sizes": sizes,
+		"groups": groups,
+	}
+
+
+@frappe.whitelist()
+def receive_new_item(
+	package_name: str,
+	code: str,
+	product: str,
+	color: str = "",
+	size: str = "",
+	item_group: str = "",
+	collection: str = "",
+	quantity: float = 1,
+	flag: int = 0,
+	note: str = "",
+) -> dict:
+	"""Create the item for an unknown barcode the way the catalogue is built, then receive it.
+
+	Code = the barcode; name from the client's template (`{PRODUCT} {COLOR} {SIZE}`, capitals); traits set;
+	group must be one of the client's own. Flagged for review when the worker asks, or when the product
+	type, color or size is missing.
+	"""
+	doc = _writable_package(package_name)
+	code = (code or "").strip()
+	product = re.sub(r"\s+", " ", product or "").strip()
+	color = re.sub(r"\s+", " ", color or "").strip()
+	size = (size or "").strip().upper()
+	if not code:
+		frappe.throw("Scan or enter the item barcode.")
+	if not product:
+		frappe.throw("Pick or type the product.")
+	if _resolve_scanned_item(code):
+		return receive_scan(doc.name, code, quantity)
+	if frappe.db.exists("Item", code):
+		frappe.throw(f"Item code {code} already exists but is disabled. Enable it in Desk to receive it.")
+	customer = doc.get("customer")
+	groups = _client_groups(customer)
+	group = item_group if item_group in groups else _unsorted_item_group(customer)
+	missing = [label for label, value in (("type", item_group in groups), ("color", color), ("size", size)) if not value]
+	needs_review = cint(flag) or bool(missing)
+
+	item = frappe.new_doc("Item")
+	item.item_code = code
+	item.item_name = _render_item_name(_name_template(customer), product, color, size)
+	item.item_group = group
+	item.stock_uom = "Nos"
+	item.is_stock_item = 1
+	item.soy_product = product
+	item.soy_color = color
+	item.soy_size = size
+	item.soy_collection = (collection or "").strip()
+	item.append("barcodes", {"barcode": code, "barcode_type": _barcode_type(code)})
+	if needs_review:
+		item.soy_needs_review = 1
+		reasons = [note.strip()] if (note or "").strip() else []
+		if missing:
+			reasons.append(f"Created at receive without {', '.join(missing)}")
+		item.soy_review_reason = "; ".join(reasons) or "Flagged at receive"
+		item.soy_flagged_by = frappe.session.user
+	item.insert(ignore_permissions=True)
+
+	result = receive_item(doc.name, item.name, quantity)
+	result.update(
+		{"resolved": True, "created": item.name, "item_name": item.item_name, "needs_review": bool(needs_review)}
+	)
+	return result
+
+
+@frappe.whitelist()
+def set_received_qty(package_name: str, item_code: str, quantity: float) -> dict:
+	"""Set a line's counted quantity directly (the line's number field). 0 removes an unstaged line."""
+	doc = _writable_package(package_name)
+	row = _package_row(doc, item_code)
+	if row.get("assigned_bin"):
+		frappe.throw(f"{row.item_code} is already staged - its quantity can no longer change.")
+	quantity = flt(quantity)
+	if quantity < 0:
+		frappe.throw("Quantity cannot be negative.")
+	if quantity == 0:
+		doc.remove(row)
+		doc.last_scan_action = f"Removed {item_code}"
+	else:
+		row.received_qty = quantity
+		row.condition = row.get("condition") or "Good"
+		doc.last_scan_action = f"Set {item_code} to {quantity:g}"
+	doc.status = "Inspecting"
+	doc.save()
+	_publish_task_update(doc)
+	return {"name": doc.name, "item_code": item_code, "received_qty": quantity}
+
+
+@frappe.whitelist()
+def set_item_group(package_name: str, item_code: str, item_group: str) -> dict:
+	"""Floor correction of an item's product type, limited to the package client's own groups.
+	Flags the item so Soy Ops sees the change (old and new group in the reason)."""
+	doc = _writable_package(package_name)
+	_package_row(doc, item_code)
+	if item_group not in _client_groups(doc.get("customer")):
+		frappe.throw(f"{item_group} is not one of {doc.get('customer')}'s item groups.")
+	old = frappe.db.get_value("Item", item_code, "item_group")
+	if old == item_group:
+		return {"item_code": item_code, "item_group": item_group}
+	frappe.db.set_value(
+		"Item",
+		item_code,
+		{
+			"item_group": item_group,
+			"soy_needs_review": 1,
+			"soy_review_reason": f"Group changed on the floor from {old} to {item_group}",
+			"soy_flagged_by": frappe.session.user,
+		},
+	)
+	return {"item_code": item_code, "item_group": item_group, "previous": old}
+
+
+@frappe.whitelist()
+def flag_item(package_name: str, item_code: str, reason: str = "") -> dict:
+	"""Floor flag: something about this item needs Soy Ops to look (color, size, name...)."""
+	doc = _writable_package(package_name)
+	_package_row(doc, item_code)
+	frappe.db.set_value(
+		"Item",
+		item_code,
+		{
+			"soy_needs_review": 1,
+			"soy_review_reason": (reason or "").strip() or f"Flagged at receive on {doc.name}",
+			"soy_flagged_by": frappe.session.user,
+		},
+	)
+	return {"item_code": item_code, "needs_review": True}
 
 
 @frappe.whitelist()
@@ -2017,20 +2297,22 @@ def capture_provisional_item(
 	if existing:
 		return receive_scan(doc.name, code, quantity)
 
-	if not frappe.db.exists("Item Group", PROVISIONAL_ITEM_GROUP):
-		group = frappe.new_doc("Item Group")
-		group.item_group_name = PROVISIONAL_ITEM_GROUP
-		group.parent_item_group = "All Item Groups"
-		group.is_group = 0
-		group.insert(ignore_permissions=True)
+	if frappe.db.exists("Item", code):
+		frappe.throw(f"Item code {code} already exists but is disabled. Enable it in Desk to receive it.")
 
+	# Standard naming: the item code IS the scanned barcode (what every catalogue item already does), so a
+	# later scan of the same code resolves to this item. It lands in the client's own "Unsorted" group
+	# (under the client's item group, which is what ties an item to its client), with Needs Review set.
 	item = frappe.new_doc("Item")
 	item.item_code = code
 	item.item_name = item_name
-	item.item_group = PROVISIONAL_ITEM_GROUP
+	item.item_group = _unsorted_item_group(doc.get("customer"))
 	item.stock_uom = "Nos"
 	item.is_stock_item = 1
-	item.append("barcodes", {"barcode": code, "barcode_type": "CODE-39"})
+	item.append("barcodes", {"barcode": code, "barcode_type": _barcode_type(code)})
+	item.soy_needs_review = 1
+	item.soy_review_reason = "Not in the catalogue when it was received"
+	item.soy_flagged_by = frappe.session.user
 	item.insert(ignore_permissions=True)
 
 	action = frappe.new_doc("Inventory Action")
@@ -2055,12 +2337,40 @@ def _writable_package(name: str):
 	doc = frappe.get_doc("Inbound Package", name)
 	if not doc.has_permission("write"):
 		frappe.throw(f"You do not have permission to update Inbound Package {name}.", frappe.PermissionError)
-	if doc.get("status") in ("Stored", "Consolidated", "Shipped", "Delivered"):
+	if doc.get("status") in ("Stored", "Consolidated", "Shipped", "Delivered", "Cancelled"):
 		frappe.throw(f"Inbound Package {name} is already {doc.get('status')}.")
 	return doc
 
 
 PROVISIONAL_ITEM_GROUP = "Provisional - Needs Review"
+
+
+def _barcode_type(code: str) -> str:
+	"""Barcode type from the code itself: retail digits by length, otherwise CODE-39 like the catalogue."""
+	if code.isdigit():
+		return {13: "EAN-13", 12: "UPC-A", 8: "EAN-8"}.get(len(code), "CODE-39")
+	return "CODE-39"
+
+
+def _unsorted_item_group(customer: str | None) -> str:
+	"""The client's own group for items nobody has classified yet; the old shared group if the client has none."""
+	tenant_group = customer if customer and frappe.db.exists("Item Group", customer) else None
+	if not tenant_group:
+		if not frappe.db.exists("Item Group", PROVISIONAL_ITEM_GROUP):
+			group = frappe.new_doc("Item Group")
+			group.item_group_name = PROVISIONAL_ITEM_GROUP
+			group.parent_item_group = "All Item Groups"
+			group.is_group = 0
+			group.insert(ignore_permissions=True)
+		return PROVISIONAL_ITEM_GROUP
+	name = f"{tenant_group} - Unsorted"
+	if not frappe.db.exists("Item Group", name):
+		group = frappe.new_doc("Item Group")
+		group.item_group_name = name
+		group.parent_item_group = tenant_group
+		group.is_group = 0
+		group.insert(ignore_permissions=True)
+	return name
 
 
 def _zone_warehouse(zone: str, company: str | None = None) -> str | None:
@@ -2165,8 +2475,8 @@ def receive_all(package_name: str) -> dict:
 
 @frappe.whitelist()
 def flag_receive_item(package_name: str, item_code: str, reason: str) -> dict:
-	"""Flag an inspection exception (Damaged / Missing / Hold / Unknown SKU) on a received line."""
-	allowed = {"Damaged", "Missing", "Hold", "Unknown SKU"}
+	"""Set a received line's condition: an exception (Damaged / Missing / Hold / Unknown SKU), or Good to clear one."""
+	allowed = {"Good", "Damaged", "Missing", "Hold", "Unknown SKU"}
 	if reason not in allowed:
 		frappe.throw("Choose a valid receiving exception reason.")
 	doc = _writable_package(package_name)
@@ -2198,7 +2508,9 @@ def stage_item(package_name: str, item_code: str, bin_code: str) -> dict:
 		frappe.throw(f"{row.item_code} is already staged at {row.assigned_bin}.")
 	if flt(row.get("received_qty")) <= 0:
 		frappe.throw(f"Confirm {row.item_code} before staging it.")
-	bin_warehouse = _resolve_bin(bin_code)
+	# Resolved inside the package's own client, so a short code like A01 can never land in another client's bin.
+	package_company = doc.get("customer") if frappe.db.exists("Company", doc.get("customer") or "") else None
+	bin_warehouse = _resolve_bin(bin_code, package_company)
 
 	# Damaged stock must not land in normal storage counting as available. Route it to
 	# the Damaged warehouse so the condition flag has an actual stock consequence.
@@ -2268,7 +2580,16 @@ def complete_receipt(package_name: str) -> dict:
 		asn.status = "Received"
 		asn.save(ignore_permissions=True)
 		_publish_task_update(asn)
-	return {"name": doc.name, "status": doc.status}
+	return {
+		"name": doc.name,
+		"status": doc.status,
+		"stock_entry": doc.get("stock_entry_reference") or "",
+		"lines": [
+			{"item_code": row.item_code, "qty": flt(row.get("received_qty")), "bin": row.get("assigned_bin")}
+			for row in doc.get("package_items") or []
+			if row.get("assigned_bin") and flt(row.get("received_qty")) > 0
+		],
+	}
 
 
 def _open_pick_reserved_qty(item_code: str, warehouse: str) -> float:
@@ -2918,7 +3239,7 @@ def create_shipment_task(
 
 	Pre-seeded as already packed so it works immediately with generate_shipment_label
 	and mark_shipment_shipped. tracking_number is left blank unless passed explicitly, so
-	generate_shipment_label still buys a real Shippo label instead of skipping it.
+	generate_shipment_label still buys a real label instead of skipping it.
 	"""
 	rows = _parse_manual_items(items)
 	warehouse = _default_warehouse("Storage")
@@ -2966,18 +3287,120 @@ def _writable_shipment(task_name: str):
 	return doc
 
 
+_SHIP_TO_KEYS = ("name", "company", "line_1", "line_2", "city", "state", "postal_code", "country", "phone", "email")
+_PARCEL_KEYS = ("weight_kg", "length_cm", "width_cm", "height_cm")
+
+
+def _medusa_ship_to(shipment_task) -> dict:
+	"""Ship-to the order carried in from Medusa (empty when the source sent none)."""
+	pick = _origin_pick(shipment_task)
+	raw = pick.get("medusa_shipping_address") if pick else None
+	if not raw:
+		return {}
+	try:
+		address = json.loads(raw)
+	except ValueError:
+		return {}
+	name = " ".join(part for part in (address.get("first_name"), address.get("last_name")) if part)
+	return {
+		"name": name or address.get("name") or "",
+		"company": address.get("company") or "",
+		"line_1": address.get("address_1") or address.get("line_1") or "",
+		"line_2": address.get("address_2") or address.get("line_2") or "",
+		"city": address.get("city") or "",
+		"state": address.get("province") or address.get("state") or "",
+		"postal_code": address.get("postal_code") or "",
+		"country": (address.get("country_code") or address.get("country") or "").upper(),
+		"phone": address.get("phone") or "",
+		"email": address.get("email") or "",
+	}
+
+
+def _saved_ship_to(shipment_task) -> dict:
+	return {key: shipment_task.get(f"ship_to_{key}") or "" for key in _SHIP_TO_KEYS}
+
+
+def _ship_form(shipment_task) -> dict:
+	"""What the Ship screen shows: saved entry first, else the order's address, else blank."""
+	saved = _saved_ship_to(shipment_task)
+	from_order = _medusa_ship_to(shipment_task)
+	source = "saved" if any(saved.values()) else ("order" if any(from_order.values()) else "")
+	return {
+		"ship_to": saved if source == "saved" else (from_order or saved),
+		"ship_to_source": source,
+		"parcel": {key: shipment_task.get(f"parcel_{key}") or 0 for key in _PARCEL_KEYS},
+	}
+
+
+def _parse_form(value) -> dict:
+	if not value:
+		return {}
+	return value if isinstance(value, dict) else json.loads(value)
+
+
+def _validated_label_inputs(ship_to: dict, parcel: dict) -> tuple[dict, dict]:
+	"""A real carrier needs a deliverable address and a weighed, measured box."""
+	ship_to = {key: str(ship_to.get(key) or "").strip() for key in _SHIP_TO_KEYS}
+	ship_to["country"] = ship_to["country"].upper()
+	missing = [
+		label
+		for key, label in (
+			("name", "recipient name"),
+			("line_1", "address line 1"),
+			("city", "city"),
+			("postal_code", "postal code"),
+			("country", "country"),
+		)
+		if not ship_to[key]
+	]
+	if missing:
+		frappe.throw(f"Enter the {', '.join(missing)} before generating a label.")
+	if len(ship_to["country"]) != 2 or not ship_to["country"].isalpha():
+		frappe.throw("Country must be a 2-letter code, for example US.")
+	if not (ship_to["phone"] or ship_to["email"]):
+		frappe.throw("Enter a phone number or email for the recipient.")
+	parcel = {key: flt(parcel.get(key)) for key in _PARCEL_KEYS}
+	if any(parcel[key] <= 0 for key in _PARCEL_KEYS):
+		frappe.throw("Enter the parcel weight and length, width and height - all above zero.")
+	return ship_to, parcel
+
+
 @frappe.whitelist()
-def generate_shipment_label(task_name: str) -> dict:
+def generate_shipment_label(task_name: str, ship_to=None, parcel=None) -> dict:
 	"""Reserve a tracking number/label via the site's configured shipping provider
 	(site config `shipping_provider`: "manual" by default - no external call, no cost;
 	"shippo" or "easyship" buy a real label). See shipping_providers.py - adding another
 	carrier is a new ShippingProvider subclass there, this call site doesn't change.
+
+	`ship_to` / `parcel` (dict or JSON) are what the worker confirmed on the Ship screen; they are
+	saved on the task first, so a failed purchase keeps the entry. A real carrier refuses to
+	buy without a complete address and parcel; the manual provider takes them if given.
 	"""
 	from soypaq import shipping_providers
 
 	doc = _writable_shipment(task_name)
 	if not doc.get("tracking_number"):
-		label = shipping_providers.get_provider().buy_label()
+		provider = shipping_providers.get_provider()
+		ship_to_form, parcel_form = _parse_form(ship_to), _parse_form(parcel)
+		if ship_to_form or parcel_form:
+			for key in _SHIP_TO_KEYS:
+				doc.set(f"ship_to_{key}", str(ship_to_form.get(key) or "").strip())
+			for key in _PARCEL_KEYS:
+				doc.set(f"parcel_{key}", flt(parcel_form.get(key)))
+			doc.save()
+			# A refused purchase throws and rolls the request back; commit so the typed entry survives.
+			frappe.db.commit()
+		if provider.name == "manual":
+			label = provider.buy_label()
+		else:
+			saved_ship_to, saved_parcel = _validated_label_inputs(
+				_saved_ship_to(doc), {key: doc.get(f"parcel_{key}") for key in _PARCEL_KEYS}
+			)
+			saved_parcel["items"] = [
+				{"description": row.get("item_name") or row.item_code, "quantity": flt(row.packed_qty) or 1}
+				for row in doc.get("shipment_items") or []
+			]
+			label = provider.buy_label(ship_to=saved_ship_to, parcel=saved_parcel)
 		doc.tracking_number = label["tracking_number"]
 		doc.carrier = label["carrier"]
 		doc.shipping_label_url = label["label_url"]
@@ -3174,9 +3597,25 @@ def _best_pick_bin(item_code: str, quantity: float, storage_zone: str | None) ->
 	return best
 
 
+def _clean_shipping_address(value) -> str | None:
+	"""Keep the order's shipping address as JSON on the Pick Task so the Ship screen can prefill it.
+	Optional: a payload without one just means the worker types it in at label time."""
+	if not value:
+		return None
+	try:
+		address = json.loads(value) if isinstance(value, str) else value
+	except ValueError:
+		return None
+	return json.dumps(address, default=str) if isinstance(address, dict) and address else None
+
+
 @frappe.whitelist(allow_guest=True)
 def create_order_from_medusa(
-	order_id: str = None, customer_name: str = None, items=None, display_id: str = None
+	order_id: str = None,
+	customer_name: str = None,
+	items=None,
+	display_id: str = None,
+	shipping_address=None,
 ) -> dict:
 	"""Turn a Medusa order.placed payload into a real Pick Task (Flow A).
 
@@ -3250,7 +3689,11 @@ def create_order_from_medusa(
 		frappe.db.set_value(
 			"Pick Task",
 			result["name"],
-			{"medusa_order_id": order_id, "medusa_order_number": order_number},
+			{
+				"medusa_order_id": order_id,
+				"medusa_order_number": order_number,
+				"medusa_shipping_address": _clean_shipping_address(shipping_address),
+			},
 			update_modified=False,
 		)
 		_log_medusa_intake(order_id, "Created", None, result["name"], customer, payload, order_number)
@@ -3388,14 +3831,100 @@ def _next_bin_code(parent: str) -> str:
 	return f"{best[0]}{best[1] + 1:02d}"
 
 
-@frappe.whitelist()
-def new_bin_options(customer: str | None = None) -> dict:
-	"""Customers that can own a bin, plus the default next code for the chosen one."""
+def _onboarded_customers() -> list[str]:
+	"""Customers set up to hold stock: they have a Company and a Storage zone."""
 	customers = []
 	for name in frappe.get_all("Customer", filters={"disabled": 0}, pluck="name", order_by="name"):
 		# 3PL convention (AGENT.md): a tenant's Customer and Company share a name.
 		if frappe.db.exists("Company", name) and _storage_group(name):
 			customers.append(name)
+	return customers
+
+
+CLIENT_CREATE_ROLES = {"Stock Manager", "System Manager"}
+
+
+def _can_create_client() -> bool:
+	return frappe.session.user == "Administrator" or bool(CLIENT_CREATE_ROLES & set(frappe.get_roles()))
+
+
+@frappe.whitelist()
+def receive_client_options() -> dict:
+	"""Clients the Start receiving popup can offer, and whether this user may add a new one."""
+	return {"customers": _onboarded_customers(), "can_create": _can_create_client()}
+
+
+@frappe.whitelist()
+def client_bins(customer: str | None = None, item_codes=None, near_warehouse: str | None = None) -> dict:
+	"""A client's bins for a picker: every leaf bin under its Storage zone, with what is on hand.
+
+	`item_codes` (JSON list) adds `held` per bin - quantity of those items already there - so a picker can
+	show where an item already lives first. `near_warehouse` finds the client from a bin when the caller
+	has a bin but not a client name.
+	"""
+	customer = (customer or "").strip()
+	if not customer and near_warehouse:
+		customer = _warehouse_company(near_warehouse) or ""
+	zone = _storage_group(customer) if customer and frappe.db.exists("Company", customer) else None
+	if not zone:
+		return {"customer": customer, "bins": []}
+	codes = json.loads(item_codes) if isinstance(item_codes, str) and item_codes else (item_codes or [])
+	warehouses = frappe.get_all(
+		"Warehouse",
+		filters={"parent_warehouse": zone, "is_group": 0, "disabled": 0},
+		pluck="name",
+		order_by="name asc",
+	)
+	stock = {}
+	if warehouses:
+		for row in frappe.get_all(
+			"Bin", filters={"warehouse": ["in", warehouses]}, fields=["warehouse", "item_code", "actual_qty"], limit_page_length=0
+		):
+			entry = stock.setdefault(row.warehouse, {"on_hand": 0, "held": {}})
+			entry["on_hand"] += flt(row.actual_qty)
+			if row.item_code in codes and flt(row.actual_qty) > 0:
+				entry["held"][row.item_code] = flt(row.actual_qty)
+	bins = []
+	for name in warehouses:
+		code = re.sub(r" - [A-Za-z0-9]+$", "", re.sub(r"^.* - Storage - ", "", name))
+		entry = stock.get(name, {"on_hand": 0, "held": {}})
+		bins.append({"warehouse": name, "code": code, "on_hand": entry["on_hand"], "held": entry["held"]})
+	return {"customer": customer, "bins": bins}
+
+
+@frappe.whitelist()
+def create_client(customer_name: str) -> dict:
+	"""Create a 3PL Client from the floor. Saving the Customer starts the usual background tenant
+	onboarding (Company, warehouses, first bin, item group, item prefix); poll client_setup_status.
+	Limited to Stock Manager and System Manager - it creates a Company and a warehouse tree."""
+	if not _can_create_client():
+		frappe.throw("Only a Stock Manager can add a new client.", frappe.PermissionError)
+	customer_name = re.sub(r"\s+", " ", customer_name or "").strip()
+	if len(customer_name) < 2:
+		frappe.throw("Enter the client's name.")
+	if frappe.db.exists("Customer", {"customer_name": customer_name}) or frappe.db.exists("Customer", customer_name):
+		frappe.throw(f"A client named {customer_name} already exists.")
+	if frappe.db.exists("Company", customer_name):
+		frappe.throw(f"A company named {customer_name} already exists.")
+	doc = frappe.new_doc("Customer")
+	doc.customer_name = customer_name
+	doc.customer_type = "Company"
+	doc.customer_group = "3PL Client"
+	doc.territory = frappe.db.get_single_value("Selling Settings", "territory") or "All Territories"
+	doc.insert(ignore_permissions=True)
+	return {"name": doc.name, "ready": False}
+
+
+@frappe.whitelist()
+def client_setup_status(customer: str) -> dict:
+	"""Has the background onboarding finished, so the client can receive stock?"""
+	return {"name": customer, "ready": customer in _onboarded_customers()}
+
+
+@frappe.whitelist()
+def new_bin_options(customer: str | None = None) -> dict:
+	"""Customers that can own a bin, plus the default next code for the chosen one."""
+	customers = _onboarded_customers()
 	customer = customer if customer in customers else (customers[0] if customers else None)
 	return {
 		"customers": customers,

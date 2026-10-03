@@ -6,6 +6,108 @@ The current version is shown in the app under Settings → App version.
 Convention: bump `APP_VERSION` / `APP_BUILD_DATE` in `apps/soypaq/ui/src/App.vue` on every change set that
 reaches a running site (local or prod), and log it here with Backend/Frontend split.
 
+## v0.12.0 - 2026-10-03
+
+**Receive is one screen: Count, Stage, Finish. New items are built from the client's own catalogue.** Minor bump (`APP_VERSION`/`__version__` 0.12.0, cache-buster `0.12.0`). Run `bench migrate` (Customer field `Item Name Template`, patch `add_item_name_template`), then restart the backend and workers. Plan: `RECEIVE_WORKFLOW_PROJECT.md` (phase 3).
+
+**Backend**
+- Naming for an item that is not in the catalogue: code = the barcode (unchanged), name built from the client's **Item Name Template** (new Customer field, default `{PRODUCT} {COLOR} {SIZE}`, in capitals, matching every current item), Product / Color / Size / Collection set, group must be one of the client's own product types.
+- `receive_item_suggestion`: the client's products, colors, sizes and types to pick from, plus a prefill from a **related item**: an existing code that differs in one segment (an unknown `EXC-BT-PNK-XXL` fills from `EXC-BT-PNK-L`; a different color segment fills the color, abbreviations expanded). Works across the three code formats in use. Leftover season groups are not offered.
+- `receive_new_item`: creates and receives in one step. Flagged for review when the worker asks (with a note) or when type, color or size is missing.
+- `set_received_qty`: a line's count is set directly; 0 removes an unstaged line. `set_item_group`: the floor can change an item's type within the client's own groups; the item is flagged with the old and new group. `flag_item`: flag with a reason. `flag_receive_item` accepts Good to clear a condition.
+- Per-client guard: scanning another client's item into a package is refused with a message naming the owner (item codes are global; ownership comes from the item group).
+- `complete_receipt` returns the Stock Entry and each line's bin; the package payload carries the Stock Entry, and lines carry their item group and review flag.
+
+**Frontend**
+- One receive screen with a progress strip **Count -> Stage -> Finish** (replaces Package / Confirm / Stage / Stored and their gates). Header shows the client, package and counts.
+- Scan field with the camera icon inside it (also on Pick and Pack); a hardware scanner types straight into the field.
+- Unknown barcode opens the **New item** sheet: barcode type shown, Product / Color / Size pickers from the client's existing values (each with "+ New..."), Type and Collection, live item-name preview, quantity, "Flag for review" with a note.
+- Each line: plain number field for the count (no +/-), Review and condition badges, a line menu (condition Good / Damaged / Hold, change type and flag, flag with a note, remove line), and the bin picker with Stage. Bins are preselected: a bin already holding the item, else the last bin used in this box. "Stage all to suggested bins".
+- **Finish** review (lines, units, bins, damaged/held and flagged counts) then **Store package**; a **Stored** confirmation lists each line's bin and the Stock Entry, with "Receive next package (same client)" (opens Start receiving with that client chosen).
+- Removed: the Accept-package step, the per-line drawer, "Mark all as confirmed", the unrelated advance-notice panel.
+
+**Walkthrough (local, browser)**: opened an existing package (staged line shown as "Staged - A01"); started a new one for a client; scanned a known item; scanned an unknown new size, which filled Product, Color, Size, Type, Collection and the name `BASIC LOGO TEE PINK XXL` from its related item; scanned a 13-digit retail barcode (blank sheet, EAN-13), picked a product (type and collection filled, name `LOGO TEE BLUE S`) and flagged it with a note; set a count to 3 with the number field; marked a line Damaged from the line menu; staged one line, after which the others defaulted to the same bin; Stage all; Damaged line went to the client's Damaged warehouse; Finish review showed 3 lines, 5 units, 2 bins, 1 damaged, 1 flagged; Store posted one Stock Entry (zero-cost items included) and showed the Stored screen; "Receive next package" opened Start receiving with the client chosen. Backend checks (rolled back): related-item fill for size and color, auto-flag when details are missing, count edit and removal, group change refused outside the client, cross-client scan refused. Test receipt then cancelled and deleted, test package and items removed; stock back to its starting quantity.
+
+## v0.11.12 - 2026-10-03
+
+**Fix: finishing a receive failed for an item with no cost.** Patch bump (`APP_VERSION`/`__version__` 0.11.12, cache-buster `0.11.12`). Restart the backend and workers; no migrate needed.
+
+**Backend**
+- "Mark stored" raised "Item 123 has zero rate but 'Allow Zero Valuation Rate' is not enabled": the receipt Stock Entry sends no rate, so any item with valuation rate 0 (every item created at receive, and the disabled originals) blocked the whole package. Receipt rows for an item with no valuation rate are now posted with Allow Zero Valuation Rate, the same rule `adjust_bin_qty` already uses. Received stock is the client's, and prices default to 0 until the client sets them; no pricing or billing change.
+
+**Frontend**: version bump only.
+
+**Check (local)**: the blocked package (`SPQ-MIA-00006`, 3 units of item `123` staged to A01) completed inside a rolled-back transaction: one submitted Material Receipt, rate 0, allow-zero set, package Stored. Rolled back, so the package is still open to finish from the WMS.
+
+## v0.11.11 - 2026-10-03
+
+**New items follow one naming standard; Stage and Move pick from the client's own bins.** Patch bump (`APP_VERSION`/`__version__` 0.11.11, cache-buster `0.11.11`). Restart the backend and workers; no migrate needed. Plan: `RECEIVE_WORKFLOW_PROJECT.md`.
+
+**Backend**
+- Naming standard for an item scanned in that is not in the catalogue: **item code = the scanned barcode**, the barcode is attached to the item with its type detected from the code (13 digits EAN-13, 12 UPC-A, 8 EAN-8, otherwise CODE-39 like the catalogue), and it is flagged Needs Review. It now lands in the client's own `<Client> - Unsorted` item group (under the client's item group, which is what ties an item to a client) instead of one shared group; a client with no item group falls back to the old shared group. A code that exists but is disabled gets a clear message instead of a duplicate error.
+- `client_bins(customer, item_codes, near_warehouse)`: every bin under the client's Storage zone with its on-hand quantity and, for the items asked about, how many are already there.
+- Fix: staging a line resolved a short bin code (`A01`) without the package's client, so the same code could resolve to another client's bin. It now resolves inside the package's own client.
+- Receive package payload carries `customer`; the receive list carries `expected_qty`.
+
+**Frontend**
+- Stage screen: each line has a bin picker preloaded with the client's bins (bins already holding that item first, then the rest with on-hand), a **Stage** button, the scan button, and **+ New bin...** (opens New bin with the client preselected; the new bin comes back selected). Replaces the typed bin box.
+- Live inventory Move bin: Destination is the same picker (source bin excluded, bins already holding the item first, + New bin...).
+- "Mark all as confirmed" is hidden unless the package has expected quantities. It was a demo helper for packages with expected lines; a blind package has nothing to confirm against.
+- Fix: continuing a blind package from the list opened the Package step, whose "Accept package" button is disabled with nothing expected, leaving no way forward. It now resumes at scanning.
+
+**Walkthrough (local, browser)**: started a package for a client; "Mark all as confirmed" absent; scanned a new 13-digit barcode and described it: item created with code = barcode, type EAN-13, group `<Client> - Unsorted`, Needs Review set. Scanned a known item. On Stage, each picker listed the client's six bins, with "Already holds this item: A01 - 12 here" first for the known item. Created a new bin from the picker (back selected, shown in the list), staged one line to it and the other to A01 (both saved on the package). In Inventory, Move bin's destination showed the same list without the source bin. A disabled catalogue item correctly counted as not in the catalogue. Not run: Mark stored (no test stock posted). Test items, package and the new bin were then deleted (no ledger entries on any of them).
+
+## v0.11.10 - 2026-10-03
+
+**Start receiving: client dropdown, create a client from the floor, no warehouse field.** Patch bump (`APP_VERSION`/`__version__` 0.11.10, cache-buster `0.11.10`). Restart the backend and workers; no migrate needed. Plan: `RECEIVE_WORKFLOW_PROJECT.md` (phase 2).
+
+**Backend**
+- `receive_client_options`: the clients that can receive stock (a Company and a Storage zone) and whether this user may add one.
+- `create_client(customer_name)`: creates a Customer in the 3PL Client group; the existing background onboarding then builds the Company, warehouses, first bin, item group and item prefix. Limited to Stock Manager and System Manager (others get a permission message); refuses a blank, duplicate or already-used name. `client_setup_status` reports when setup has finished.
+- Fix: a blind package without a typed warehouse took the first Receiving warehouse in the system, which could belong to another client. It now takes the chosen client's own Receiving zone, and says so if that client has none yet.
+- `new_bin_options` shares the same client list helper.
+
+**Frontend**
+- Start receiving popup: Client is a dropdown of set-up clients (no default, "Choose client"); the free-text customer and the Warehouse field are gone.
+- "+ Create new client" (shown only to users allowed to create): name only, then "Setting up..." until the client can hold stock, after which it is selected automatically. Start receiving is disabled while the form is open.
+- The New bin popup still sends "+ New customer" to the Desk form (unchanged).
+
+**Walkthrough (local, browser)**: the dropdown listed the three set-up clients and the Create option; an empty name was refused; a new test client finished setup in a few seconds and was selected; Start receiving opened a package under it. That run showed the wrong-warehouse bug above (another client's Receiving zone); after the fix the package carried the new client's own Receiving warehouse. A user with only operator roles was refused (`can_create` false, permission error, no customer created). The test client, its packages, company, warehouses and item group were then deleted; company, warehouse, customer, item group, account, GL entry and cost centre counts match the starting values and no ledger entries ever existed for it.
+
+## v0.11.9 - 2026-10-03
+
+**Receive packages can be claimed and cancelled; items can be flagged for review; "Log inbound ASN" removed.** Patch bump (`APP_VERSION`/`__version__` 0.11.9, cache-buster `0.11.9`). Run `bench migrate` (new Inbound Package field, Item review fields, a Soy Ops card), then restart the backend and workers. Plan: `RECEIVE_WORKFLOW_PROJECT.md` (phase 1).
+
+**Backend**
+- Inbound Package gains `assigned_user` and a `Cancelled` status. Receive now uses the same claim rules as Pick, Pack and Ship: Start claims it, Release hands it back, Cancel closes it, and one person can hold only one active task across all four stages. Starting a blind package or resuming one by tracking number claims it. Cancelled packages drop out of the lists; Stored and Cancelled packages cannot be claimed or edited.
+- Fix: a receive package in progress never appeared under Active, and an open one could not be cancelled, because Inbound Package had no claim field.
+- Item gains Needs Review, Review Reason and Flagged By. An item captured at receive because it was not in the catalogue is flagged automatically (it is still created in "Provisional - Needs Review"). Patch `add_item_review_flag` adds the fields, flags any item already in that group, and creates the **Items Needing Review** Soy Ops card.
+- Soy Ops workspace: new **Flagged Items** shortcut (Item list filtered to Needs Review), **Inbound Package** shortcut and the card above.
+- Fresh installs now create the workspace KPI cards (previously only migrate did).
+
+**Frontend**
+- Receive list: the "Log inbound ASN" button is removed (the test-only ASN entry); "Start receiving" is the only way in.
+- Receive package drawer: Start claims, and Release and **Cancel task** now show for Receive. An open package appears under Active with "Claimed by" once started.
+
+**Walkthrough (local, browser)**: Start receiving as a client; scanned an unknown barcode and captured it (item created and flagged, toast "captured for review"); back on the list the package showed under Active (1) with "Claimed by Administrator"; Release moved it to Open; Cancel removed it (status Cancelled, gone from the lists); Start on another open package claimed it. Soy Ops shows the card with 1, and Flagged Items opens the Item list filtered to that one item. Starting while another task was claimed gave the one-active-task message. Left in the local site: the test item `TESTBC-0001` (flagged) and cancelled package `SPQ-MIA-00006`.
+
+## v0.11.8 - 2026-10-02
+
+**Shipping labels use the real ship-to address and parcel.** Patch bump (`APP_VERSION`/`__version__` 0.11.8, cache-buster `0.11.8`). Run `bench migrate` (new Shipment Task and Pick Task fields), then restart the backend and workers.
+
+**Backend**
+- Shipment Task gains ship-to fields (name, company, address lines, city, state, postal code, 2-letter country, phone, email) and parcel fields (weight kg, length, width, height cm).
+- `generate_shipment_label(task_name, ship_to, parcel)` saves what the worker entered, then buys the label. The entry is committed first, so a refused purchase keeps it. A real carrier refuses without a recipient, address, 2-letter country, phone or email, and a weight and box all above zero. The `manual` provider still needs none of it.
+- Shippo and EasyShip clients translate the neutral ship-to and parcel into their own request shapes (`address_from_ship_to`, `parcel_from_form`). The fixed example destination and box are no longer used by the Ship step.
+- Fix: the EasyShip client used two calls the 2024-09 API does not have (a courier field on `PATCH /shipments/{id}` and `POST /labels`; both were rejected by the sandbox). It now buys with `POST /shipments/{id}/label` and the chosen courier service. Label and tracking parsing follows the documented response and is unproven until a sandbox purchase succeeds.
+- Pick Task gains `medusa_shipping_address` (JSON). `create_order_from_medusa` accepts an optional `shipping_address` and stores it. Nothing sends one yet, so every order is typed in by hand until the storefront subscriber adds it. Medusa-style keys (`first_name`, `address_1`, `province`, `country_code`) are mapped to the form.
+- The Ship payload returns `ship_to`, `ship_to_source` (`saved`, `order` or blank) and `parcel`.
+
+**Frontend**
+- Ship screen: a "Ship to" and "Parcel" form above "Generate shipping label". It is prefilled from the saved entry, else from the order's address when one exists (with a "Prefilled from the order" note), and sent with the label request.
+
+**Walkthrough (local, EasyShip sandbox)**: validation rejects a blank form, a 3-letter country and a zero dimension; a Medusa-style address maps to the form; a shipment with the typed address and a 30x20x10 cm, 1.2 kg parcel is accepted by EasyShip and returns four rates. The label purchase itself is refused (403, the sandbox account needs identity verification), so no label has been generated yet. Browser (Ship screen): the form shows on a ready shipment, and tapping Generate with it empty shows the "Enter the recipient name, address line 1, city, postal code" message. A purchase was retried with a replacement sandbox key and gets the same 403.
+
 ## Unreleased - 2026-09-26
 
 **Customer Onboarding desk workspace.** Run `bench migrate` (new standard workspace, patch `add_onboarding_workspace`). No version bump; no WMS UI change.
@@ -48,7 +150,7 @@ reaches a running site (local or prod), and log it here with Backend/Frontend sp
 
 **Backend**
 - Saving a Customer in the **3PL Client** group now sets up its tenant in the background (`soypaq/onboarding.py`), laid out like the first tenant: a Company of the same name (unique abbreviation from the initials, currency and country copied from the billing company), a root warehouse group with Receiving, PickPack, Returns, Damaged, a Storage group and first bin `A01`, plus an item group for its product-type groups. An "Item Code Prefix" (first three consonants, unique) is suggested. Idempotent and locked against overlapping saves; a failure is logged and noted on the Customer.
-- New Customer fields: Item Code Prefix, Tenant Onboarded (read-only). Existing 3PL Clients that are already set up are marked onboarded by patch `add_tenant_onboarding`; the first tenant's prefix is HMN.
+- New Customer fields: Item Code Prefix, Tenant Onboarded (read-only). Existing 3PL Clients that are already set up are marked onboarded by patch `add_tenant_onboarding`; the first tenant's prefix is EXC.
 - The customer then appears in WMS "+ New bin" with the next free code (A02 after A01).
 
 **Frontend**: none.
@@ -104,7 +206,7 @@ reaches a running site (local or prod), and log it here with Backend/Frontend sp
 **Bin shown per line in the task drawer.** Patch bump (`APP_VERSION`/`__version__` 0.11.1, cache-buster `0.11.1`).
 
 **Frontend**
-- Task drawer contents show each line's bin next to its SKU (`HMN-AFG-BLACK-L · Bin A02`).
+- Task drawer contents show each line's bin next to its SKU (`EXC-LGT-BLACK-L · Bin A02`).
 
 **Walkthrough (local, bug pass)**: item in two bins (6 in A02, 4 in A05): switching bin in the line sheet clamps quantity to the new bin's availability, and + disables at the cap. One task across two bins: locked until each bin is confirmed (item scan, short code `A02`, or wrong bin rejected); short/exception flag and cancel work on multi-bin tasks; over-pick rejected. New bin from the Move bin sheet fills the destination and the move posts. Duplicate/invalid bin codes and customers without a Storage zone are rejected. `apply_medusa_products` stamps traits and reports unknown SKUs. Automated tests pass on the test site (21 run, 8 skipped for lack of stock data). Test data removed; inventory on hand 486. Known and held: "available" does not yet count completed-but-unshipped picks.
 
